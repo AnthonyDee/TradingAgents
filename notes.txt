@@ -1,0 +1,2 @@
+location of install:
+/Users/e/miniforge3/envs/tradingagents/lib/python3.12/site-packages/cli
