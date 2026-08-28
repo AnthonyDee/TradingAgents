@@ -41,6 +41,7 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
+from tradingagents.dataflows.social_scraper import fetch_social_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 
 
@@ -70,6 +71,7 @@ def create_sentiment_analyst(llm):
         news_block = get_news.func(ticker, start_date, end_date)
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
         reddit_block = fetch_reddit_posts(ticker)
+        social_block = fetch_social_posts(ticker)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -78,6 +80,7 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            social_block=social_block,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -131,6 +134,7 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    social_block: str,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -156,6 +160,14 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 <start_of_reddit>
 {reddit_block}
+
+### Social media posts — X and other platforms (past 7 days)
+User-generated commentary from X and other platforms. Typically faster, more speculative signals.
+
+<start_of_social>
+{social_block}
+<end_of_social>
+
 <end_of_reddit>
 
 ## How to analyze this data (best practices)

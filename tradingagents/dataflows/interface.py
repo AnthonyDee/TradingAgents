@@ -19,6 +19,7 @@ from .errors import (
 )
 from .fred import get_macro_data as get_fred_macro_data
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
+from .social_scraper import fetch_social_posts as get_social_posts
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -73,6 +74,12 @@ TOOLS_CATEGORIES = {
         "description": "Market-implied probabilities for forward-looking events",
         "tools": [
             "get_prediction_markets",
+        ]
+    },
+    "social_sentiment": {
+        "description": "Social media discussion and sentiment",
+        "tools": [
+            "get_social_posts",
         ]
     }
 }
@@ -140,6 +147,10 @@ VENDOR_METHODS = {
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
+    },
+    # social_sentiment
+    "get_social_posts": {
+        "social_scraper": get_social_posts,
     },
 }
 
