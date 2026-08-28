@@ -4,6 +4,8 @@ Writes a run's per-section markdown (analysts, research, trading, risk,
 portfolio) plus a consolidated ``complete_report.md`` under ``save_path``. The
 CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
 run produces the same on-disk report tree a CLI run does.
+
+Added: EPUB version
 """
 
 from datetime import datetime
@@ -20,7 +22,7 @@ except Exception:
     HAVE_EPUB = False
 
 
-def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
+def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | None = None) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
@@ -47,7 +49,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         analyst_parts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
-        sections.append(f"## I. Analyst Team Reports\n\n{content}")
+        sections.append(f"## I. Analyst Reports\n\n{content}")
 
     # 2. Research
     if final_state.get("investment_debate_state"):
@@ -75,7 +77,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         trading_dir = save_path / "3_trading"
         trading_dir.mkdir(exist_ok=True)
         (trading_dir / "trader.md").write_text(final_state["trader_investment_plan"], encoding="utf-8")
-        sections.append(f"## III. Trading Team Plan\n\n### Trader\n{final_state['trader_investment_plan']}")
+        sections.append(f"## III. Trading Plan\n\n### Trader\n{final_state['trader_investment_plan']}")
 
     # 4. Risk Management
     if final_state.get("risk_debate_state"):
@@ -96,7 +98,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             risk_parts.append(("Neutral Analyst", risk["neutral_history"]))
         if risk_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in risk_parts)
-            sections.append(f"## IV. Risk Management Team Decision\n\n{content}")
+            sections.append(f"## IV. Risk Management Decision\n\n{content}")
 
         # 5. Portfolio Manager
         if risk.get("judge_decision"):
@@ -106,7 +108,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
     # Write consolidated report
-    header = f"# {ticker} Analysis Report\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header = f"# {ticker} Report\n\n{datetime.now().strftime('%A, %B %d, %Y %H:%M %p')}\n\n"
     complete_md_path = save_path / "complete_report.md"
     complete_md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
     if HAVE_EPUB:
@@ -115,8 +117,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             book = epub.EpubBook()
             book.set_identifier('trading-analysis')
             # Author: use deep and quick think models if different
-            deep = DEFAULT_CONFIG.get("deep_think_llm", "deep")
-            quick = DEFAULT_CONFIG.get("quick_think_llm", "quick")
+            cfg = config or DEFAULT_CONFIG
+            deep = cfg.get("deep_think_llm", "deep")
+            quick = cfg.get("quick_think_llm", "quick")
             author_name = f"{deep} & {quick}" if deep != quick else deep
             book.add_author(author_name)
             book.set_title(f'{ticker} Analysis Report')
@@ -136,14 +139,51 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             book.add_item(chapter)
             chapters = [chapter]
 
+            # Build nested analyst sub-chapters under "Analyst Team Reports"
+            analyst_parent = epub.EpubHtml(
+                title="Analyst Team Reports",
+                file_name="chap_analyst_team.xhtml",
+                content=markdown.markdown("# Analyst Team Reports\n\n", extensions=["tables", "fenced_code"]),
+            )
+            book.add_item(analyst_parent)
+            chapters.append(analyst_parent)
+
+            analyst_files = {
+                "Market Analyst":       final_state.get("market_report", ""),
+                "Sentiment Analyst":    final_state.get("sentiment_report", ""),
+                "News Analyst":         final_state.get("news_report", ""),
+                "Fundamentals Analyst": final_state.get("fundamentals_report", ""),
+            }
+            analyst_children = []
+            for name, text in analyst_files.items():
+                if not text:
+                    continue  # skip analysts not included in this run
+                fname = f"analyst_{name.split()[0].lower()}.xhtml"
+                child = epub.EpubHtml(
+                    title=name,
+                    file_name=fname,
+                    content=markdown.markdown(f"# {name}\n\n{text}", extensions=["tables", "fenced_code"]),
+                )
+                book.add_item(child)
+                analyst_children.append(child)
+
             # Create a chapter for each existing section
             for title, content in zip(chapter_titles, sections):
                 html = markdown.markdown(f"# {title}\n\n{content}", extensions=["tables", "fenced_code"])
                 chap = epub.EpubHtml(title=title, file_name=f"chap_{title.replace(' ', '_').lower()}.xhtml", content=html)
                 book.add_item(chap)
                 chapters.append(chap)
-            book.toc = chapters
-            book.spine = ['nav'] + chapters
+
+            # Build TOC with nested analyst sub-chapters (only if any ran)
+            if analyst_children:
+                book.toc = [
+                    chapter,
+                    (epub.Link(analyst_parent.file_name, analyst_parent.title, analyst_parent.id),
+                     [epub.Link(c.file_name, c.title, c.id) for c in analyst_children]),
+                ] + chapters[2:]
+            else:
+                book.toc = chapters
+            book.spine = ['nav'] + chapters + analyst_children
 
             style = '''
             body {
@@ -174,7 +214,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             )
             book.add_item(css_item)
             # Link the stylesheet to every chapter so all tables render styled
-            for chap in chapters:
+            for chap in chapters + analyst_children:
                 chap.add_link(href='style.css', rel='stylesheet', type='text/css')
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
