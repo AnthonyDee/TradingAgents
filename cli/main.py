@@ -51,6 +51,14 @@ from tradingagents.graph.analyst_execution import (
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.reporting import write_report_tree
 
+# Optional dependencies for EPUB generation
+try:
+    from ebooklib import epub
+    import markdown
+    HAVE_EPUB = True
+except Exception:
+    HAVE_EPUB = False
+
 console = Console()
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts

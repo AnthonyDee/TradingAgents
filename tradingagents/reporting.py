@@ -10,6 +10,16 @@ from datetime import datetime
 from pathlib import Path
 
 
+import traceback
+from tradingagents.default_config import DEFAULT_CONFIG
+try:
+    from ebooklib import epub
+    import markdown
+    HAVE_EPUB = True
+except Exception:
+    HAVE_EPUB = False
+
+
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
@@ -97,5 +107,47 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
 
     # Write consolidated report
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
-    return save_path / "complete_report.md"
+    complete_md_path = save_path / "complete_report.md"
+    complete_md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
+    if HAVE_EPUB:
+        try:
+            # Build simple epub with markdown converted to html
+            book = epub.EpubBook()
+            book.set_identifier('trading-analysis')
+            # Author: use deep and quick think models if different
+            deep = DEFAULT_CONFIG.get("deep_think_llm", "deep")
+            quick = DEFAULT_CONFIG.get("quick_think_llm", "quick")
+            author_name = f"{deep} & {quick}" if deep != quick else deep
+            book.set_author(author_name)
+            book.set_title(f'{ticker} Analysis Report')
+            book.set_language('en')
+            # Convert markdown to HTML for the chapter
+            html_content = markdown.markdown(header + "\n\n".join(sections))
+            chapter = epub.EpubHtml(title=f'{ticker}', file_name='chap_01.xhtml', content=html_content)
+            book.add_item(chapter)
+            # Build chapters for each major section
+            chapters = []
+            chapter_titles = [
+                "Analyst Team Reports",
+                "Research Team Decision",
+                "Trading Team Plan",
+                "Risk Management Team Decision",
+                "Portfolio Manager Decision",
+            ]
+            # Create a chapter for each existing section
+            for title, content in zip(chapter_titles, sections):
+                html = markdown.markdown(f"# {title}\n\n{content}")
+                chapter = epub.EpubHtml(title=title, file_name=f"chap_{title.replace(' ', '_').lower()}.xhtml", content=html)
+                book.add_item(chapter)
+                chapters.append(chapter)
+            book.toc = chapters
+            book.spine = ['nav'] + chapters
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+            date_suffix = datetime.now().strftime("%Y-%m-%d")
+            epub_path = save_path / f"{ticker}_{date_suffix}.epub"
+            epub.write_epub(str(epub_path), book, {})
+        except Exception as e:
+            traceback.print_exc()
+            # fall back to just markdown
+    return complete_md_path
