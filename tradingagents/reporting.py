@@ -106,7 +106,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
     # Write consolidated report
-    header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header = f"# {ticker} Analysis Report\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     complete_md_path = save_path / "complete_report.md"
     complete_md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
     if HAVE_EPUB:
@@ -118,13 +118,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             deep = DEFAULT_CONFIG.get("deep_think_llm", "deep")
             quick = DEFAULT_CONFIG.get("quick_think_llm", "quick")
             author_name = f"{deep} & {quick}" if deep != quick else deep
-            book.set_author(author_name)
+            book.add_author(author_name)
             book.set_title(f'{ticker} Analysis Report')
             book.set_language('en')
-            # Convert markdown to HTML for the chapter
-            html_content = markdown.markdown(header + "\n\n".join(sections))
-            chapter = epub.EpubHtml(title=f'{ticker}', file_name='chap_01.xhtml', content=html_content)
-            book.add_item(chapter)
             # Build chapters for each major section
             chapters = []
             chapter_titles = [
@@ -134,14 +130,52 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
                 "Risk Management Team Decision",
                 "Portfolio Manager Decision",
             ]
+            # Convert markdown to HTML for the first chapter (full report)
+            html_content = markdown.markdown(header + "\n\n".join(sections), extensions=["tables", "fenced_code"])
+            chapter = epub.EpubHtml(title=str(ticker), file_name='chapter.xhtml', content=html_content)
+            book.add_item(chapter)
+            chapters = [chapter]
+
             # Create a chapter for each existing section
             for title, content in zip(chapter_titles, sections):
-                html = markdown.markdown(f"# {title}\n\n{content}")
-                chapter = epub.EpubHtml(title=title, file_name=f"chap_{title.replace(' ', '_').lower()}.xhtml", content=html)
-                book.add_item(chapter)
-                chapters.append(chapter)
+                html = markdown.markdown(f"# {title}\n\n{content}", extensions=["tables", "fenced_code"])
+                chap = epub.EpubHtml(title=title, file_name=f"chap_{title.replace(' ', '_').lower()}.xhtml", content=html)
+                book.add_item(chap)
+                chapters.append(chap)
             book.toc = chapters
             book.spine = ['nav'] + chapters
+
+            style = '''
+            body {
+                font-size: 90%;
+                line-height: 1.4;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                font-size: 0.9em;
+                margin: 1em 0;
+                page-break-inside: avoid;
+            }
+            th, td {
+                border: 1px solid #aaa;
+                padding: 4px 8px;
+                text-align: left;
+            }
+            th {
+                background-color: #f0f0f0;
+                font-weight: bold;
+            }
+            '''
+            css_item = epub.EpubItem(
+                file_name='style.css',
+                media_type='text/css',
+                content=style
+            )
+            book.add_item(css_item)
+            # Link the stylesheet to every chapter so all tables render styled
+            for chap in chapters:
+                chap.add_link(href='style.css', rel='stylesheet', type='text/css')
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
             date_suffix = datetime.now().strftime("%Y-%m-%d")
