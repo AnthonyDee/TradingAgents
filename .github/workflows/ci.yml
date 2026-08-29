@@ -37,10 +37,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Fresh install (no dev extras) and import
+      - name: Fresh editable install (no dev extras) and import
         run: |
           python -m pip install --upgrade pip
-          pip install .
+          pip install -e .
           # Catches undeclared runtime deps (e.g. #994 python-dotenv): a bare
           # install must import the package and the CLI module.
           python -c "import tradingagents, cli.main; print('clean-install import OK')"

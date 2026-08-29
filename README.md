@@ -109,10 +109,17 @@ conda create -n tradingagents python=3.12
 conda activate tradingagents
 ```
 
-Install the package and its dependencies:
+Install the package and its dependencies. Use the **editable** form (`-e`) so
+pip installs only the `tradingagents` console script plus a reference to this
+source tree — it does **not** copy the codebase into site-packages, so there is
+a single source of truth and your edits are picked up immediately:
 ```bash
-pip install .
+pip install -e .
 ```
+
+> Note: a plain `pip install .` copies the package into site-packages, creating
+> a second, frozen copy that silently drifts from your working tree (and breaks
+> on code edits). Always prefer `pip install -e .`.
 
 ### Docker
 
@@ -149,7 +156,7 @@ export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 
-For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-4-8-v1:0`.
+For AWS Bedrock, install the extra with `pip install -e ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-4-8-v1:0`.
 
 For local models, configure Ollama with `llm_provider: "ollama"`. The default endpoint is `http://localhost:11434/v1`; set `OLLAMA_BASE_URL` to point at a remote `ollama-serve`. Pull models with `ollama pull <name>`, and pick "Custom model ID" in the CLI for any model not listed by default.
 
