@@ -34,6 +34,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_news,
+    get_verified_market_snapshot,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -73,6 +74,11 @@ def create_sentiment_analyst(llm):
         reddit_block = fetch_reddit_posts(ticker)
         social_block = fetch_social_posts(ticker)
 
+        # Verified current-price snapshot, so the sentiment analyst can ground
+        # any price-level or percentage-move claim even when the market
+        # analyst is not in the selected analyst set.
+        price_block = get_verified_market_snapshot.func(ticker, end_date, 30)
+
         system_message = _build_system_message(
             ticker=ticker,
             start_date=start_date,
@@ -81,6 +87,7 @@ def create_sentiment_analyst(llm):
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
             social_block=social_block,
+            price_block=price_block,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -135,6 +142,7 @@ def _build_system_message(
     stocktwits_block: str,
     reddit_block: str,
     social_block: str,
+    price_block: str,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
@@ -168,6 +176,13 @@ User-generated commentary from X and other platforms. Typically faster, more spe
 {social_block}
 <end_of_social>
 
+### Current market price — verified snapshot (as of {end_date})
+The source of truth for the current share price and recent OHLCV. Use it to ground any price-level or percentage-move statement; do not guess or infer a price.
+
+<start_of_price>
+{price_block}
+<end_of_price>
+
 <end_of_reddit>
 
 ## How to analyze this data (best practices)
@@ -187,6 +202,8 @@ User-generated commentary from X and other platforms. Typically faster, more spe
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 
 8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+
+9. **Ground every price statement in the verified snapshot.** Before stating the current share price, a price level, or a recent percentage move, cite the Current market price block above. If the snapshot is unavailable or its `<unavailable>` placeholder is present, say so explicitly rather than guessing a price.
 
 ## Output fields
 

@@ -214,6 +214,10 @@ class TradingAgentsGraph:
                     get_insider_transactions,
                     get_macro_indicators,
                     get_prediction_markets,
+                    # Verified current-price snapshot so the news analyst can
+                    # ground any price-level claim even when the market analyst
+                    # is not in the selected analyst set.
+                    get_verified_market_snapshot,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -223,6 +227,10 @@ class TradingAgentsGraph:
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
+                    # Verified current-price snapshot so the fundamentals analyst
+                    # can ground any price-level claim even when the market
+                    # analyst is not in the selected analyst set.
+                    get_verified_market_snapshot,
                 ]
             ),
         }
