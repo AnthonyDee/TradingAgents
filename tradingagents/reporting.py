@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 
+import re
 import traceback
 from tradingagents.default_config import DEFAULT_CONFIG
 try:
@@ -20,6 +21,24 @@ try:
     HAVE_EPUB = True
 except Exception:
     HAVE_EPUB = False
+
+
+def _prepare_markdown_for_epub(md: str) -> str:
+    """Normalize markdown so bullet lists render as lists in the EPUB.
+
+    Python-Markdown requires a blank line before a ``*``/``-`` bullet list;
+    without it the bullets are treated as paragraph text and the ``*`` shows
+    up literally. This inserts a blank line before any list item whose
+    preceding line is non-empty and not already a blank/separator.
+    """
+    lines = md.split("\n")
+    out = []
+    list_re = re.compile(r"^\s*[\*\-]\s+\S")
+    for i, line in enumerate(lines):
+        if list_re.match(line) and i > 0 and lines[i - 1].strip() != "":
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | None = None) -> Path:
@@ -59,11 +78,11 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
         if debate.get("bull_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
-            research_parts.append(("Bull Researcher", debate["bull_history"]))
+            research_parts.append(("Bull", debate["bull_history"]))
         if debate.get("bear_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
-            research_parts.append(("Bear Researcher", debate["bear_history"]))
+            research_parts.append(("Bear", debate["bear_history"]))
         if debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "manager.md").write_text(debate["judge_decision"], encoding="utf-8")
@@ -124,6 +143,22 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             book.add_author(author_name)
             book.set_title(f'{ticker} Analysis Report')
             book.set_language('en')
+            # Cover page with day, date and time
+            now = datetime.now()
+            cover_html = f"""
+            <html>
+            <head><title>{ticker} Analysis Report</title></head>
+            <body style="text-align:center; padding-top:3em;">
+                <h1>{ticker} Analysis Report</h1>
+                <p style="font-size:1.2em;">{now.strftime('%A')}</p>
+                <p style="font-size:1.2em;">{now.strftime('%B %d, %Y')}</p>
+                <p style="font-size:1.2em;">{now.strftime('%I:%M %p')}</p>
+                <p>Author: {author_name}</p>
+            </body>
+            </html>
+            """
+            cover = epub.EpubHtml(title=f"{ticker} Analysis Report", file_name="cover.xhtml", content=cover_html)
+            book.add_item(cover)
             # One chapter per report section (no duplicated full-report dump).
             # The analyst section is split into per-analyst sub-chapters so its
             # content is represented exactly once.
@@ -137,7 +172,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
                     analyst_parent = epub.EpubHtml(
                         title="Analyst Team Reports",
                         file_name="chap_analyst_team.xhtml",
-                        content=markdown.markdown("# Analyst Team Reports\n\n", extensions=["tables", "fenced_code"]),
+                        content=markdown.markdown(_prepare_markdown_for_epub("# Analyst Team Reports\n\n"), extensions=["tables", "fenced_code", "sane_lists"]),
                     )
                     book.add_item(analyst_parent)
                     for block in sec.split("\n### ")[1:]:
@@ -149,7 +184,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
                         child = epub.EpubHtml(
                             title=name,
                             file_name=fname,
-                            content=markdown.markdown(f"# {name}\n\n{text.strip()}", extensions=["tables", "fenced_code"]),
+                            content=markdown.markdown(_prepare_markdown_for_epub(f"# {name}\n\n{text.strip()}"), extensions=["tables", "fenced_code", "sane_lists"]),
                         )
                         book.add_item(child)
                         analyst_children.append(child)
@@ -159,13 +194,13 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
                 chap = epub.EpubHtml(
                     title=heading,
                     file_name=fname,
-                    content=markdown.markdown(sec, extensions=["tables", "fenced_code"]),
+                    content=markdown.markdown(_prepare_markdown_for_epub(sec), extensions=["tables", "fenced_code", "sane_lists"]),
                 )
                 book.add_item(chap)
                 chapters.append(chap)
 
-            # TOC: analyst sub-chapters nested under their parent, then the rest.
-            toc = []
+            # TOC: cover first, then analyst sub-chapters nested under their parent, then the rest.
+            toc = [epub.Link(cover.file_name, cover.title, cover.id)]
             if analyst_parent is not None:
                 toc.append(
                     (epub.Link(analyst_parent.file_name, analyst_parent.title, analyst_parent.id),
@@ -174,7 +209,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             toc.extend(chapters)
             book.toc = toc
 
-            spine_items = []
+            spine_items = [cover]
             if analyst_parent is not None:
                 spine_items.append(analyst_parent)
                 spine_items.extend(analyst_children)
@@ -202,6 +237,13 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
                 background-color: #f0f0f0;
                 font-weight: bold;
             }
+            ul, ol {
+                margin: 0.5em 0;
+                padding-left: 1.5em;
+            }
+            li {
+                margin: 0.2em 0;
+            }
             '''
             css_item = epub.EpubItem(
                 file_name='style.css',
@@ -210,7 +252,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             )
             book.add_item(css_item)
             # Link the stylesheet to every chapter so all tables render styled
-            for chap in ([analyst_parent] if analyst_parent else []) + analyst_children + chapters:
+            for chap in [cover] + ([analyst_parent] if analyst_parent else []) + analyst_children + chapters:
                 chap.add_link(href='style.css', rel='stylesheet', type='text/css')
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())

@@ -226,6 +226,78 @@ def _fetch_openrouter_models() -> list[tuple[str, str]]:
         return []
 
 
+def _fetch_openai_compatible_models(base_url: str | None) -> list[tuple[str, str]]:
+    """Fetch available models from an OpenAI-compatible endpoint's /models.
+
+    Mirrors ``_fetch_openrouter_models`` but hits the user's own server (vLLM,
+    LM Studio, llama.cpp, Ollama's OpenAI shim, a custom relay, ...). Returns
+    ``[]`` on any failure so the caller falls back to the static catalog +
+    "Custom model ID".
+    """
+    if not base_url:
+        return []
+    import requests
+
+    url = base_url.rstrip("/") + "/models"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        models = resp.json().get("data", [])
+        out = []
+        for m in models:
+            mid = m.get("id") or m.get("name")
+            if mid:
+                out.append((mid, mid))
+        # Local catalogs are typically small and curated, so preserve the
+        # server's own order rather than sorting.
+        return out
+    except Exception as e:
+        console.print(f"\n[yellow]Could not fetch models from {url}: {e}[/yellow]")
+        return []
+
+
+def select_openai_compatible_model(mode: str, base_url: str | None) -> str:
+    """Select a model from a live OpenAI-compatible endpoint, or enter a custom ID.
+
+    When the live list can't be fetched (server unreachable or no URL), falls
+    back to the static catalog for the provider/mode plus a "Custom model ID"
+    entry, so selection still works offline.
+    """
+    models = _fetch_openai_compatible_models(base_url)
+    if models:
+        choices = [questionary.Choice(name, value=mid) for name, mid in models]
+        choices.append(questionary.Choice("Custom model ID", value="custom"))
+        prompt = f"Select Your [{mode.title()}-Thinking] Model (fetched from {base_url}):"
+    else:
+        # Fall back to the curated static catalog (e.g. gemma-4-31b-it-4bit).
+        from tradingagents.llm_clients.model_catalog import get_model_options
+        console.print(
+            "[yellow]Could not fetch live models; using the built-in model list.[/yellow]"
+        )
+        choices = [
+            questionary.Choice(display, value=value)
+            for display, value in get_model_options("openai_compatible", mode)
+        ]
+
+    choice = questionary.select(
+        prompt if models else f"Select Your [{mode.title()}-Thinking] OpenAI-Compatible Model:",
+        choices=choices,
+        instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
+        style=questionary.Style([
+            ("selected", "fg:magenta noinherit"),
+            ("highlighted", "fg:magenta noinherit"),
+            ("pointer", "fg:magenta noinherit"),
+        ]),
+    ).ask()
+
+    if choice is None:
+        console.print("\n[red]No model selected. Exiting...[/red]")
+        exit(1)
+    if choice == "custom":
+        return _prompt_custom_model_id()
+    return choice
+
+
 def _require_text(message: str, hint: str) -> str:
     """Prompt for a required value; exit cleanly if the user cancels.
 
@@ -289,10 +361,19 @@ def _prompt_custom_model_id() -> str:
     return _require_text("Enter model ID:", "Please enter a model ID.")
 
 
-def _select_model(provider: str, mode: str) -> str:
-    """Select a model for the given provider and mode (quick/deep)."""
+def _select_model(provider: str, mode: str, default: str | None = None, base_url: str | None = None) -> str:
+    """Select a model for the given provider and mode (quick/deep).
+
+    If ``default`` is supplied and present in the option list, it is shown
+    pre-selected so the user can accept it with Enter or change it.
+    """
     if provider.lower() == "openrouter":
         return select_openrouter_model(mode)
+
+    if provider.lower() == "openai_compatible":
+        from tradingagents.default_config import DEFAULT_CONFIG
+        url = base_url or DEFAULT_CONFIG.get("backend_url")
+        return select_openai_compatible_model(mode, url)
 
     if provider.lower() == "azure":
         return _require_text(
@@ -300,12 +381,17 @@ def _select_model(provider: str, mode: str) -> str:
             "Please enter a deployment name.",
         )
 
+    options = list(get_model_options(provider, mode))
+    # Only pre-select if the default is actually one of the offered values
+    valid_default = default if default and any(v == default for _, v in options) else None
+
     choice = questionary.select(
         f"Select Your [{mode.title()}-Thinking LLM Engine]:",
         choices=[
             questionary.Choice(display, value=value)
-            for display, value in get_model_options(provider, mode)
+            for display, value in options
         ],
+        default=valid_default,
         instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
         style=questionary.Style(
             [
@@ -317,6 +403,9 @@ def _select_model(provider: str, mode: str) -> str:
     ).ask()
 
     if choice is None:
+        # User cancelled — fall back to the configured default if available
+        if default:
+            return default
         console.print(f"\n[red]No {mode} thinking llm engine selected. Exiting...[/red]")
         exit(1)
 
@@ -326,14 +415,16 @@ def _select_model(provider: str, mode: str) -> str:
     return choice
 
 
-def select_shallow_thinking_agent(provider) -> str:
+def select_shallow_thinking_agent(provider, base_url: str | None = None) -> str:
     """Select shallow thinking llm engine using an interactive selection."""
-    return _select_model(provider, "quick")
+    from tradingagents.default_config import DEFAULT_CONFIG
+    return _select_model(provider, "quick", DEFAULT_CONFIG.get("quick_think_llm"), base_url)
 
 
-def select_deep_thinking_agent(provider) -> str:
+def select_deep_thinking_agent(provider, base_url: str | None = None) -> str:
     """Select deep thinking llm engine using an interactive selection."""
-    return _select_model(provider, "deep")
+    from tradingagents.default_config import DEFAULT_CONFIG
+    return _select_model(provider, "deep", DEFAULT_CONFIG.get("deep_think_llm"), base_url)
 
 def _llm_provider_table() -> list[tuple[str, str, str | None]]:
     """(display_name, provider_key, base_url) for every supported provider.

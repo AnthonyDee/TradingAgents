@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 import sys
 from pathlib import Path
 
@@ -6,6 +7,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tradingagents.reporting import write_report_tree
 from tradingagents.default_config import DEFAULT_CONFIG
+
+
+def _prepare_markdown_for_epub(md: str) -> str:
+    """Insert a blank line before bullet lists so ``*`` items render as lists.
+
+    Python-Markdown needs a blank line before a ``*``/``-`` bullet list; without
+    it the asterisks appear literally as paragraph text. This fixes that.
+    """
+    lines = md.split("\n")
+    out = []
+    list_re = re.compile(r"^\s*[\*\-]\s+\S")
+    for i, line in enumerate(lines):
+        if list_re.match(line) and i > 0 and lines[i - 1].strip() != "":
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
 
 def convert_md_to_epub(md_path: str):
     md_path = Path(md_path)
@@ -42,8 +59,8 @@ def convert_md_to_epub(md_path: str):
     book.set_title(f'{ticker} Analysis Report')
     book.set_language('en')
     
-    html_content = markdown.markdown(md_content, extensions=["tables", "fenced_code"])
-    chapter = epub.EpubHtml(title=str(ticker), file_name='chapter.xhtml', content=html_content)
+    html_content = markdown.markdown(_prepare_markdown_for_epub(md_content), extensions=["tables", "fenced_code", "sane_lists"])
+    chapter = epub.EpubHtml(title=str(ticker), file_name='complete_report.xhtml', content=html_content)
     book.add_item(chapter)
     
     style = '''
@@ -66,6 +83,13 @@ def convert_md_to_epub(md_path: str):
         background-color: #f0f0f0;
         font-weight: bold;
     }
+    ul, ol {
+        margin: 0.5em 0;
+        padding-left: 1.5em;
+    }
+    li {
+        margin: 0.2em 0;
+    }
     '''
     css_item = epub.EpubItem(
         file_name='style.css',
@@ -74,7 +98,6 @@ def convert_md_to_epub(md_path: str):
     )
     book.add_item(css_item)
     chapter.add_link(href='style.css', rel='stylesheet', type='text/css')
-    book.add_item(chapter)
     book.toc = (chapter,)
     book.spine = ['nav', chapter]
     book.add_item(epub.EpubNcx())

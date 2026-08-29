@@ -1,2 +1,32 @@
 location of install:
 /Users/e/miniforge3/envs/tradingagents/lib/python3.12/site-packages/cli
+
+
+Based on `graph/setup.py` (lines 50-92), here's the wiring:
+
+**Uses `quick_think_llm` (the "shallow"/faster model):**
+- **Analyst Team** — all four:
+  - Market Analyst (`create_market_analyst`)
+  - Sentiment Analyst (`create_sentiment_analyst`)
+  - News Analyst (`create_news_analyst`)
+  - Fundamentals Analyst (`create_fundamentals_analyst`)
+- **Research Team:**
+  - Bull Researcher (`create_bull_researcher`)
+  - Bear Researcher (`create_bear_researcher`)
+- **Trading Team:**
+  - Trader (`create_trader`)
+- **Risk Management:**
+  - Aggressive Analyst (`create_aggressive_debator`)
+  - Neutral Analyst (`create_neutral_debator`)
+  - Conservative Analyst (`create_conservative_debator`)
+- **Meta/infrastructure:**
+  - Reflector (`reflection.py`) — uses `quick_thinking_llm`
+  - SignalProcessor (`signal_processing.py`) — uses `quick_thinking_llm`
+
+**Uses `deep_think_llm` (the "deep"/slower model):**
+- **Research Team:**
+  - Research Manager (`create_research_manager`)
+- **Portfolio Management:**
+  - Portfolio Manager (`create_portfolio_manager`)
+
+So the pattern is: **all the breadth/first-pass agents and infrastructure use the quick model, while the two "decision-synthesis" roles (Research Manager and Portfolio Manager) use the deep model.** This matches the typical design where the final aggregators/judges get the stronger model and the high-volume workers get the cheaper one.
