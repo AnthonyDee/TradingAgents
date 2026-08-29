@@ -124,66 +124,62 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             book.add_author(author_name)
             book.set_title(f'{ticker} Analysis Report')
             book.set_language('en')
-            # Build chapters for each major section
+            # One chapter per report section (no duplicated full-report dump).
+            # The analyst section is split into per-analyst sub-chapters so its
+            # content is represented exactly once.
             chapters = []
-            chapter_titles = [
-                "Analyst Team Reports",
-                "Research Team Decision",
-                "Trading Team Plan",
-                "Risk Management Team Decision",
-                "Portfolio Manager Decision",
-            ]
-            # Convert markdown to HTML for the first chapter (full report)
-            html_content = markdown.markdown(header + "\n\n".join(sections), extensions=["tables", "fenced_code"])
-            chapter = epub.EpubHtml(title=str(ticker), file_name='chapter.xhtml', content=html_content)
-            book.add_item(chapter)
-            chapters = [chapter]
-
-            # Build nested analyst sub-chapters under "Analyst Team Reports"
-            analyst_parent = epub.EpubHtml(
-                title="Analyst Team Reports",
-                file_name="chap_analyst_team.xhtml",
-                content=markdown.markdown("# Analyst Team Reports\n\n", extensions=["tables", "fenced_code"]),
-            )
-            book.add_item(analyst_parent)
-            chapters.append(analyst_parent)
-
-            analyst_files = {
-                "Market Analyst":       final_state.get("market_report", ""),
-                "Sentiment Analyst":    final_state.get("sentiment_report", ""),
-                "News Analyst":         final_state.get("news_report", ""),
-                "Fundamentals Analyst": final_state.get("fundamentals_report", ""),
-            }
+            analyst_parent = None
             analyst_children = []
-            for name, text in analyst_files.items():
-                if not text:
-                    continue  # skip analysts not included in this run
-                fname = f"analyst_{name.split()[0].lower()}.xhtml"
-                child = epub.EpubHtml(
-                    title=name,
-                    file_name=fname,
-                    content=markdown.markdown(f"# {name}\n\n{text}", extensions=["tables", "fenced_code"]),
-                )
-                book.add_item(child)
-                analyst_children.append(child)
+            for idx, sec in enumerate(sections):
+                heading = sec.split("\n", 1)[0].lstrip("#").strip()
 
-            # Create a chapter for each existing section
-            for title, content in zip(chapter_titles, sections):
-                html = markdown.markdown(f"# {title}\n\n{content}", extensions=["tables", "fenced_code"])
-                chap = epub.EpubHtml(title=title, file_name=f"chap_{title.replace(' ', '_').lower()}.xhtml", content=html)
+                if "analyst reports" in heading.lower():
+                    analyst_parent = epub.EpubHtml(
+                        title="Analyst Team Reports",
+                        file_name="chap_analyst_team.xhtml",
+                        content=markdown.markdown("# Analyst Team Reports\n\n", extensions=["tables", "fenced_code"]),
+                    )
+                    book.add_item(analyst_parent)
+                    for block in sec.split("\n### ")[1:]:
+                        name, _, text = block.partition("\n")
+                        name = name.strip()
+                        if not name:
+                            continue
+                        fname = f"analyst_{name.split()[0].lower()}.xhtml"
+                        child = epub.EpubHtml(
+                            title=name,
+                            file_name=fname,
+                            content=markdown.markdown(f"# {name}\n\n{text.strip()}", extensions=["tables", "fenced_code"]),
+                        )
+                        book.add_item(child)
+                        analyst_children.append(child)
+                    continue
+
+                fname = f"chap_{idx}_{heading.replace(' ', '_').lower()}.xhtml"
+                chap = epub.EpubHtml(
+                    title=heading,
+                    file_name=fname,
+                    content=markdown.markdown(sec, extensions=["tables", "fenced_code"]),
+                )
                 book.add_item(chap)
                 chapters.append(chap)
 
-            # Build TOC with nested analyst sub-chapters (only if any ran)
-            if analyst_children:
-                book.toc = [
-                    chapter,
+            # TOC: analyst sub-chapters nested under their parent, then the rest.
+            toc = []
+            if analyst_parent is not None:
+                toc.append(
                     (epub.Link(analyst_parent.file_name, analyst_parent.title, analyst_parent.id),
-                     [epub.Link(c.file_name, c.title, c.id) for c in analyst_children]),
-                ] + chapters[2:]
-            else:
-                book.toc = chapters
-            book.spine = ['nav'] + chapters + analyst_children
+                     [epub.Link(c.file_name, c.title, c.id) for c in analyst_children])
+                )
+            toc.extend(chapters)
+            book.toc = toc
+
+            spine_items = []
+            if analyst_parent is not None:
+                spine_items.append(analyst_parent)
+                spine_items.extend(analyst_children)
+            spine_items.extend(chapters)
+            book.spine = ['nav'] + spine_items
 
             style = '''
             body {
@@ -214,7 +210,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             )
             book.add_item(css_item)
             # Link the stylesheet to every chapter so all tables render styled
-            for chap in chapters + analyst_children:
+            for chap in ([analyst_parent] if analyst_parent else []) + analyst_children + chapters:
                 chap.add_link(href='style.css', rel='stylesheet', type='text/css')
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
