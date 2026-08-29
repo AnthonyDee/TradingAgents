@@ -1,112 +1,106 @@
-"""Modular social media scraper for ticker-specific discussion.
+"""RSS-based ticker-mention fetcher for the sentiment analyst.
 
-This module provides a base class for scraping social media platforms
-and a specific implementation for X (Twitter) using public search
-patterns. Like the Reddit implementation, it aims for a lightweight,
-no-API-key approach where possible.
+Replaces the old X/Twitter scraper. It pulls a configurable list of financial
+news RSS feeds and returns entries whose title/summary mention the ticker. No
+API key is required. Feed URLs may optionally contain a ``{ticker}`` placeholder
+for ticker-specific feeds; plain URLs are filtered by ticker mention. Every
+failure degrades gracefully to a per-feed note rather than raising.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
-import re
-from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from urllib.request import Request, urlopen
-import urllib.parse
-from urllib.error import HTTPError
+
+import feedparser
+import requests
 from .symbol_utils import crypto_base
 
 logger = logging.getLogger(__name__)
 
-class SocialPlatformScraper(ABC):
-    """Base class for social media scraping implementations."""
+USER_AGENT = "tradingagents/0.2 (+https://github.com/TauricResearch/TradingAgents)"
 
-    def __init__(self, user_agent: str):
-        self.user_agent = user_agent
+# Default feed list: (name, url). Override entirely with the TA_RSS_FEEDS env
+# var (a JSON list of [name, url] pairs). URLs with a {ticker} placeholder are
+# expanded per-ticker; others are fetched once and filtered by mention.
+RSS_FEEDS: list[tuple[str, str]] = [
+    ("CNBC Top News", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("Seeking Alpha", "https://seekingalpha.com/market_currents.xml"),
+    ("Investing.com", "https://www.investing.com/rss/news_25.rss"),
+    ("Reuters Markets", "https://www.reuters.com/markets/feed"),
+    ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+]
 
-    @abstractmethod
-    def fetch_posts(self, ticker: str, limit: int, timeout: float) -> list[dict]:
-        """Fetch posts for a given ticker. Returns a list of dictionaries."""
-        pass
 
-class XScraper(SocialPlatformScraper):
-    """X (Twitter) scraper implementation."""
-    
-    def __init__(self, user_agent: str):
-        super().__init__(user_agent)
-        # Public search URL pattern
-        self._SEARCH_URL = "https://twitter.com/search?q={query}&src=typed_query&f=live"
-
-    def fetch_posts(self, ticker: str, limit: int, timeout: float) -> list[dict]:
-        """
-        Fetch recent posts from X. Note: X's public web interface is heavily 
-        protected by JS/WAF. This implementation serves as a structural 
-        template for the lauchpad.
-        """
-        query = urllib.parse.quote_plus(f"{ticker} lang:en -filter:links")
-        url = self._SEARCH_URL.format(query=query)
-        req = Request(url, headers={"User-Agent": self.user_agent})
-        
+def _load_feeds() -> list[tuple[str, str]]:
+    env = os.getenv("TA_RSS_FEEDS")
+    if env:
         try:
-            with urlopen(req, timeout=timeout) as resp:
-                content = resp.read().decode("utf-8")
-                # Simple regex extraction for demonstration purposes
-                # Real X scraping typically requires a headless browser or API
-                posts = []
-                # Placeholder logic to simulate extraction from the HTML
-                # In a production scenario, a proper parser or API would be used here
-                return posts
-        except (HTTPError, OSError) as e:
-            logger.warning("X fetch failed for %s: %s", ticker, e)
-            return []
+            data = json.loads(env)
+            if isinstance(data, list):
+                return [(str(n), str(u)) for n, u in data]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TA_RSS_FEEDS parse failed, using defaults: %s", e)
+    return RSS_FEEDS
+
 
 def fetch_social_posts(
     ticker: str,
-    platforms: Iterable[str] = ("x",),
+    feeds: Iterable[str] | None = None,
     limit_per_platform: int = 5,
     timeout: float = 10.0,
     inter_request_delay: float = 2.0,
 ) -> str:
-    """Fetch recent social media posts mentioning ticker across platforms."""
+    """Fetch recent RSS items mentioning ticker across the configured feeds."""
     ticker = crypto_base(ticker) or ticker
-    ua = "tradingagents/0.2 (+https://github.com/TauricResearch/TradingAgents)"
-    
-    # Registry of available scrapers
-    SCRAPERS = {
-        "x": XScraper(ua),
-    }
-    
-    blocks = []
-    total_posts = 0
-    
-    for i, plat in enumerate(platforms):
+    sym = ticker.upper()
+
+    feed_list = _load_feeds()
+    if feeds is not None:
+        wanted = {f.lower() for f in feeds}
+        feed_list = [(n, u) for n, u in feed_list if n.lower() in wanted]
+
+    blocks: list[str] = []
+
+    for i, (name, url) in enumerate(feed_list):
         if i > 0:
             time.sleep(inter_request_delay)
-            
-        scraper = SCRAPERS.get(plat)
-        if not scraper:
-            blocks.append(f"Platform {plat}: <unsupported platform>")
+
+        try:
+            eff_url = url.replace("{ticker}", ticker) if "{ticker}" in url else url
+            resp = requests.get(eff_url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+            resp.raise_for_status()
+            parsed = feedparser.parse(resp.content)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("RSS fetch failed for %s (%s): %s", name, ticker, e)
+            blocks.append(f"{name}: <unavailable>")
             continue
-            
-        posts = scraper.fetch_posts(ticker, limit_per_platform, timeout)
-        total_posts += len(posts)
-        
-        if not posts:
-            blocks.append(f"{plat}: <no posts found mentioning {ticker.upper()}>")
+
+        matches: list[str] = []
+        for entry in parsed.entries:
+            text = f"{getattr(entry, 'title', '')} {getattr(entry, 'summary', '')}"
+            if sym.lower() in text.lower():
+                matches.append(text.strip())
+            if len(matches) >= limit_per_platform:
+                break
+
+        if not matches:
+            blocks.append(f"{name}: <no posts found mentioning {sym}>")
             continue
-            
-        header = f"{plat} — {len(posts)} recent posts mentioning {ticker.upper()}:"
-        lines = [header]
-        for p in posts:
-            text = p.get("text", "").replace("\n", " ").strip()
-            if len(text) > 240:
-                text = text[:240] + "…"
-            lines.append(f"  - {text}")
+
+        lines = [f"{name} — {len(matches)} recent posts mentioning {sym}:"]
+        for m in matches:
+            clean = m.replace("\n", " ").strip()
+            if len(clean) > 240:
+                clean = clean[:240] + "…"
+            lines.append(f"  - {clean}")
         blocks.append("\n".join(lines))
-        
-    if total_posts == 0:
-        return f"<no social posts found mentioning {ticker.upper()} across {', '.join(platforms)}>"
-        
+
+    if not blocks:
+        return f"<no social posts found mentioning {sym} across RSS feeds>"
+
     return "\n\n".join(blocks)

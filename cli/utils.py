@@ -453,7 +453,7 @@ def _llm_provider_table() -> list[tuple[str, str, str | None]]:
         ("Azure OpenAI", "azure", None),
         ("Amazon Bedrock", "bedrock", None),
         ("Ollama", "ollama", ollama_url),
-        ("OpenAI-compatible (vLLM, LM Studio, llama.cpp, custom relay)", "openai_compatible", None),
+        ("OpenAI-compatible (vLLM, LM Studio, llama.cpp, custom relay)", "openai_compatible", "http://e1.local:8000/v1"),
     ]
 
 
@@ -479,12 +479,21 @@ def resolve_backend_url(
     return env_url or menu_url or provider_default_url(provider)
 
 
-def prompt_openai_compatible_url() -> str:
-    """Prompt for a custom OpenAI-compatible endpoint base URL."""
+def prompt_openai_compatible_url(default: str | None = None) -> str:
+    """Prompt for a custom OpenAI-compatible endpoint base URL.
+
+    When ``default`` is supplied it pre-fills the input so the user can accept
+    it with Enter (e.g. the ``http://e1.local:8000/v1`` default for this
+    provider) or edit it to point elsewhere. The default is also echoed in the
+    prompt message so it's visible even if the prefilled text is overlooked.
+    """
+    default_str = default or ""
     url = questionary.text(
-        "Enter the OpenAI-compatible base URL "
-        "(e.g. http://localhost:8000/v1 for vLLM, http://localhost:1234/v1 for LM Studio):",
-        validate=lambda x: x.strip().startswith(("http://", "https://"))
+        f"Enter the OpenAI-compatible base URL "
+        f"[default: {default_str}]\n"
+        f"(e.g. http://localhost:8000/v1 for vLLM, http://localhost:1234/v1 for LM Studio):",
+        default=default_str,
+        validate=lambda x: (x.strip().startswith(("http://", "https://")))
         or "Enter a URL starting with http:// or https://",
     ).ask()
     if not url:

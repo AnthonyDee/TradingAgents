@@ -1,5 +1,6 @@
 import contextlib
 import warnings
+from pathlib import Path
 
 # Load .env files at package import so DEFAULT_CONFIG's env-var overlay
 # (and every llm_clients consumer) sees the user's keys regardless of
@@ -13,6 +14,18 @@ try:
 
     load_dotenv(find_dotenv(usecwd=True))
     load_dotenv(find_dotenv(".env.enterprise", usecwd=True), override=False)
+
+    # Also load .env from this package's own project root. find_dotenv(usecwd=True)
+    # above only walks up from the current working directory, so launching the
+    # console script from anywhere other than the repo (e.g. the user's home)
+    # would miss the project's .env and leave keys like FRED_API_KEY unset.
+    # Deriving the path from __file__ makes key loading cwd-independent: under
+    # an editable install __file__ points into the repo, and under a regular
+    # install the parent has no .env so this harmlessly no-ops.
+    _pkg_root = Path(__file__).resolve().parent.parent
+    _root_env = _pkg_root / ".env"
+    if _root_env.is_file():
+        load_dotenv(str(_root_env))
 except ImportError:
     pass
 

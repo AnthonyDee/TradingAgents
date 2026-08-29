@@ -176,8 +176,18 @@ MODEL_OPTIONS: ProviderModeOptions = {
         ],
     },
     # Generic OpenAI-compatible endpoint: the model is whatever the user's
-    # server serves, so only "Custom model ID" is offered.
-    "openai_compatible": _CUSTOM_ONLY,
+    # server serves. Offer the configured default (gemma-4-31b-it-4bit) as a
+    # selectable choice plus "Custom model ID" for anything else.
+    "openai_compatible": {
+        "quick": [
+            ("Gemma 4 31B (4-bit)", "gemma-4-31b-it-4bit"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("Gemma 4 31B (4-bit)", "gemma-4-31b-it-4bit"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     # Hosted OpenAI-compatible providers that serve many (and frequently
     # changing) models — offer "Custom model ID" rather than a list that goes
     # stale. The endpoint + key are wired by the provider; the user picks the
