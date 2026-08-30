@@ -18,10 +18,9 @@ from collections.abc import Iterable
 import feedparser
 import requests
 from .symbol_utils import crypto_base
+from .user_agent import USER_AGENT
 
 logger = logging.getLogger(__name__)
-
-USER_AGENT = "tradingagents/0.2 (+https://github.com/TauricResearch/TradingAgents)"
 
 # Default feed list: (name, url). Override entirely with the TA_RSS_FEEDS env
 # var (a JSON list of [name, url] pairs). URLs with a {ticker} placeholder are

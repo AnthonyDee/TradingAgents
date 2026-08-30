@@ -20,11 +20,11 @@ import logging
 from urllib.request import Request, urlopen
 
 from .symbol_utils import crypto_base
+from .user_agent import USER_AGENT as _UA
 
 logger = logging.getLogger(__name__)
 
 _API = "https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
-_UA = "tradingagents/0.2 (+https://github.com/TauricResearch/TradingAgents)"
 
 
 def _stocktwits_symbol(ticker: str) -> str:
