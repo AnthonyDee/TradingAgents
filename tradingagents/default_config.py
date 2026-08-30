@@ -142,6 +142,56 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # MCP servers (e.g. Robinhood) for realtime market data. Empty by default, so
+    # the app behaves exactly as before. To enable, point at a running MCP server
+    # (stdio subprocess or SSE/HTTP endpoint). The ``command`` is ANY executable
+    # on PATH -- no ``uv``/``uvx`` required. If you pip-install the server into the
+    # tradingagents env, use its console-script name, or run it as a module
+    # (replace with the real package you install):
+    #   "mcp_servers": {
+    #       "robinhood": {
+    #           "transport": "stdio",
+    #           "command": ["robinhood-mcp"],                  # console script
+    #           # "command": ["python", "-m", "robinhood_mcp"],  # module form
+    #           "args": [],
+    #       },
+    #   },
+    # Remote Robinhood MCP (the server opencode is already connected to). No local
+    # package needed -- the app connects straight to the URL. Authentication is
+    # required: supply a bearer token via ``token`` or the ROBINHOOD_MCP_TOKEN env
+    # var (this is how opencode authenticates to the same endpoint).
+    "mcp_servers": {
+        "robinhood": {
+            "transport": "remote",
+            "url": "https://agent.robinhood.com/mcp/trading",
+            # Durable auth via OAuth token refresh. The app reads the same
+            # token store opencode writes when it connects to the Robinhood MCP
+            # server, then proactively refreshes the access token before expiry
+            # (and on any 401) so it never goes stale mid-run. Override
+            # ``token_url`` if Robinhood's token endpoint differs. You can still
+            # set ROBINHOOD_MCP_TOKEN as a one-off instead of configuring oauth.
+            "oauth": {
+                "token_store": "~/.local/share/opencode/mcp-auth.json",
+                "server_key": "robinhood-trading",
+                # "token_url": "https://agent.robinhood.com/oauth2/token",
+                # "client_id": "...",          # read from the store if omitted
+                # "client_secret": "...",      # only for confidential clients
+                # "write_back": true,          # persist refreshed tokens to the store
+            },
+        },
+    },
+    # "mcp_servers": {},
+    # Which MCP tools become read-only realtime-data tools for the analysts. A
+    # tool is surfaced only if its name contains an ``include`` substring and no
+    # ``exclude`` substring. Execution and account tools are excluded so analysts
+    # can read live market data without account access or the ability to trade.
+    "mcp_realtime_tool_filter": {
+        "include": ["quote", "price", "market"],
+        "exclude": [
+            "order", "trade", "buy", "sell", "exercise", "cancel", "place",
+            "account", "position", "portfolio", "watchlist",
+        ],
+    },
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection

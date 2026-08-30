@@ -91,6 +91,18 @@ class TradingAgentsGraph:
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
+        # MCP servers (e.g. Robinhood) for realtime market data. No-op when
+        # unconfigured, so behaviour is unchanged by default. The surfaced
+        # read-only realtime tools are injected into the analyst agents below.
+        from tradingagents.mcp import MCPClientManager
+
+        self.mcp_manager = MCPClientManager(
+            self.config.get("mcp_servers") or {},
+            filter_config=self.config.get("mcp_realtime_tool_filter"),
+        )
+        self.mcp_manager.start()
+        self.realtime_quote_tools = self.mcp_manager.get_realtime_quote_tools()
+
         # Initialize LLMs with provider-specific thinking configuration
         llm_kwargs = self._get_provider_kwargs()
 
@@ -129,6 +141,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            realtime_quote_tools=self.realtime_quote_tools,
         )
 
         self.propagator = Propagator(
@@ -198,6 +211,9 @@ class TradingAgentsGraph:
                     # LLM and required by its prompt; must be executable here or
                     # the call fails and the model reports it "unavailable").
                     get_verified_market_snapshot,
+                    # Realtime market-data tools from connected MCP servers
+                    # (e.g. Robinhood quotes). Empty when none configured.
+                    *self.realtime_quote_tools,
                 ]
             ),
             "social": ToolNode(
@@ -218,6 +234,8 @@ class TradingAgentsGraph:
                     # ground any price-level claim even when the market analyst
                     # is not in the selected analyst set.
                     get_verified_market_snapshot,
+                    # Realtime market-data tools from connected MCP servers.
+                    *self.realtime_quote_tools,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -231,6 +249,8 @@ class TradingAgentsGraph:
                     # can ground any price-level claim even when the market
                     # analyst is not in the selected analyst set.
                     get_verified_market_snapshot,
+                    # Realtime market-data tools from connected MCP servers.
+                    *self.realtime_quote_tools,
                 ]
             ),
         }
@@ -408,6 +428,11 @@ class TradingAgentsGraph:
                 self._checkpointer_ctx.__exit__(None, None, None)
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
+            # Release MCP server subprocesses / sessions after the run.
+            try:
+                self.mcp_manager.close()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
 
     def save_reports(self, final_state, ticker, save_path=None) -> Path:
         """Write the markdown report tree for a completed run, like the CLI does.

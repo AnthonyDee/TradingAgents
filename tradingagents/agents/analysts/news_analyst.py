@@ -11,7 +11,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_news_analyst(llm):
+def create_news_analyst(llm, mcp_tools=None):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         asset_type = state.get("asset_type", "stock")
@@ -25,9 +25,12 @@ def create_news_analyst(llm):
             get_prediction_markets,
             get_verified_market_snapshot,
         ]
+        # Realtime market-data tools (e.g. Robinhood quotes) from connected MCP
+        # servers. Empty when none configured.
+        tools.extend(mcp_tools or [])
 
         system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for {asset_label}-specific news by ticker symbol, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events), and get_verified_market_snapshot(symbol, curr_date, look_back_days) for the verified current price and recent OHLCV of the ticker. Before making any claim about the current share price, price level, or recent percentage move, call get_verified_market_snapshot and treat its latest row as the source of truth; do not invent or guess a price. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for {asset_label}-specific news by ticker symbol, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events), and get_verified_market_snapshot(symbol, curr_date, look_back_days) for the verified current price and recent OHLCV of the ticker. Before making any claim about the current share price, price level, or recent percentage move, call get_verified_market_snapshot and treat its latest row as the source of truth; do not invent or guess a price. Provide specific, actionable insights with supporting evidence to help traders make informed decisions. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as the current price). Prefer the live quote for the current-price framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price as of the relevant date. Always call get_verified_market_snapshot as well."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )

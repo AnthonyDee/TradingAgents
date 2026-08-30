@@ -9,7 +9,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_market_analyst(llm):
+def create_market_analyst(llm, mcp_tools=None):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
@@ -20,6 +20,9 @@ def create_market_analyst(llm):
             get_indicators,
             get_verified_market_snapshot,
         ]
+        # Realtime market-data tools (e.g. Robinhood quotes) from connected MCP
+        # servers. Empty when none configured.
+        tools.extend(mcp_tools or [])
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
@@ -50,7 +53,7 @@ Volume-Based Indicators:
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
-Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
+        Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as "current"). Prefer the live quote for the "current price" framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price "as of <date>". Always call get_verified_market_snapshot as well."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )
