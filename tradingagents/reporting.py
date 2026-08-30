@@ -147,7 +147,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             now = datetime.now()
             cover_html = f"""
             <html>
-            <head><title>{ticker} Analysis Report</title></head>
+            <head><title>{ticker} Report</title></head>
             <body style="text-align:center; padding-top:3em;">
                 <h1>{ticker} Analysis Report</h1>
                 <p style="font-size:1.2em;">{now.strftime('%A')}</p>
@@ -157,7 +157,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
             </body>
             </html>
             """
-            cover = epub.EpubHtml(title=f"{ticker} Analysis Report", file_name="cover.xhtml", content=cover_html)
+            cover = epub.EpubHtml(title=f"{ticker} Report", file_name="cover.xhtml", content=cover_html)
             book.add_item(cover)
             # One chapter per report section (no duplicated full-report dump).
             # The analyst section is split into per-analyst sub-chapters so its

@@ -1,5 +1,7 @@
 import datetime
 import os
+import platform
+import subprocess
 import sys
 import time
 from collections import deque
@@ -60,6 +62,49 @@ except Exception:
     HAVE_EPUB = False
 
 console = Console()
+
+
+def _play_analysis_complete_sound() -> None:
+    """Emit a short audible cue when the analysis finishes.
+
+    Best-effort: any failure is swallowed so the cue can never break a run. A
+    custom sound file may be supplied via the ``TRADINGAGENTS_COMPLETE_SOUND``
+    environment variable (a path to an audio file).
+    """
+    sound = os.environ.get("TRADINGAGENTS_COMPLETE_SOUND")
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            target = sound or "/System/Library/Sounds/Submarine.aiff"
+            subprocess.run(
+                ["afplay", target], check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif system == "Windows":
+            import winsound
+
+            if sound:
+                winsound.PlaySound(sound, winsound.SND_FILENAME)
+            else:
+                winsound.PlaySound("SystemAsterisk", winsound.SND_ALIAS)
+        else:  # Linux/other: try common players, else a terminal bell
+            if sound:
+                for player in ("paplay", "aplay", "ffplay"):
+                    if (
+                        subprocess.run(
+                            ["which", player],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        ).returncode == 0
+                    ):
+                        subprocess.run(
+                            [player, sound],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        break
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+    except Exception:
+        pass  # never let the completion cue abort the run
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
 # the platform at import time), so gate on the platform rather than catching the
@@ -1264,6 +1309,7 @@ def run_analysis(checkpoint: bool | None = None):
 
     # Post-analysis prompts (outside Live context for clean interaction)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
+    _play_analysis_complete_sound()
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
 
     # Prompt to save report
