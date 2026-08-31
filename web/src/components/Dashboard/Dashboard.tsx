@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect } from 'react'
-import { RotateCcw, FileText, BarChart3 } from 'lucide-react'
+import { useEffect, useRef } from 'react'
+import { RotateCcw, FileText, BarChart3, CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { AgentGrid } from './AgentGrid'
 import { ActivityLog } from './ActivityLog'
@@ -9,17 +9,29 @@ import { ReportPane } from './ReportPane'
 import { FooterStats } from './FooterStats'
 import { useAnalysisStore } from '@/store/analysis'
 import { useAnalysisWS } from '@/lib/ws'
-import { api } from '@/lib/api'
 import MarkdownRenderer from '@/lib/markdown'
+import { toast } from '@/hooks/use-toast'
 
 interface DashboardProps {
   runId: string
   onNew: () => void
+  onViewReport: (id: string) => void
 }
 
-export function Dashboard({ runId, onNew }: DashboardProps) {
+export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
   const { completed, error, runId: storeRunId } = useAnalysisStore()
   const { connected } = useAnalysisWS(runId)
+  const notifiedRef = useRef(false)
+
+  useEffect(() => {
+    if (completed && storeRunId === runId && !notifiedRef.current) {
+      notifiedRef.current = true
+      toast({
+        title: 'Analysis complete',
+        description: `${runId.slice(0, 8)} finished — report is ready to view and export.`,
+      })
+    }
+  }, [completed, runId, storeRunId])
 
   useEffect(() => {
     // Reset store for new run
@@ -28,10 +40,8 @@ export function Dashboard({ runId, onNew }: DashboardProps) {
     }
   }, [runId, storeRunId])
 
-  const handleViewReport = async () => {
-    const report = await api.getReport(runId)
-    // Navigate to report view
-    window.location.href = `/?run_id=${runId}&view=report`
+  const handleViewReport = () => {
+    onViewReport(runId)
   }
 
   const handleNewAnalysis = () => {
@@ -66,24 +76,34 @@ export function Dashboard({ runId, onNew }: DashboardProps) {
   if (completed) {
     return (
       <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between p-4 border-b">
-          <h1 className="text-xl font-semibold">Analysis Complete</h1>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleNewAnalysis}>
-              <RotateCcw className="mr-2 h-4 w-4" />
-              New Analysis
-            </Button>
-            <Button onClick={handleViewReport}>
-              <FileText className="mr-2 h-4 w-4" />
-              View Full Report
-            </Button>
+        <div className="p-4 border-b bg-green-50 dark:bg-green-900/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
+              <div>
+                <h1 className="text-xl font-semibold text-green-700 dark:text-green-400">Analysis Complete</h1>
+                <p className="text-sm text-muted-foreground">
+                  All agents finished. Your report is ready to view and export.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={handleNewAnalysis}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                New Analysis
+              </Button>
+              <Button onClick={handleViewReport}>
+                <FileText className="mr-2 h-4 w-4" />
+                View Full Report
+              </Button>
+            </div>
           </div>
         </div>
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 grid lg:grid-cols-[60%_40%] overflow-hidden">
             <div className="flex flex-col border-r">
               <div className="p-4 border-b">
-                <h2 className="font-semibold">Agent Progress</h2>
+                <h2 className="font-semibold">Agent Status — Complete</h2>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
                 <AgentGrid />

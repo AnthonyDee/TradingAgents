@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List, Callable, Awaitable
 from pathlib import Path
 
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.reporting import write_report_tree
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
@@ -87,6 +88,69 @@ class AnalysisService:
             return "crypto"
         return "stock"
 
+    def _save_report_files(self, final_state: Dict[str, Any], ticker: str) -> Optional[Path]:
+        """Write CLI-equivalent report files to the per-run reports directory.
+
+        Mirrors the CLI's on-disk layout (cli/main.py): reports live under
+        ``results_dir/<TICKER>/<analysis_date>/reports`` and include the per-
+        section markdown files, ``complete_report.md``, and the ``.epub``.
+        """
+        try:
+            cfg = self._build_run_config()
+            results_dir = Path(cfg.get("results_dir") or DEFAULT_CONFIG["results_dir"])
+            report_dir = (
+                results_dir
+                / self._safe_component(ticker)
+                / self.config.analysis_date
+                / "reports"
+            )
+            report_dir.mkdir(parents=True, exist_ok=True)
+            write_report_tree(final_state, ticker, report_dir, cfg)
+            return report_dir
+        except Exception as e:
+            # Log but never fail the run because report-writing failed.
+            print(f"[api.service] report save failed: {e}")
+            return None
+
+    @staticmethod
+    def _safe_component(name: str) -> str:
+        """Sanitize a path component (e.g. a ticker) for use in a filesystem path."""
+        return "".join(c for c in name if c.isalnum() or c in "._-") or "ticker"
+
+    @staticmethod
+    def _sanitize_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Return a JSON-serializable copy of a graph state.
+
+        The raw state accumulating ``astream`` chunks includes ``messages`` lists
+        of LangChain ``HumanMessage``/``AIMessage``/``ToolMessage`` objects, which
+        cannot be ``json.dumps``-ed. Only the report text fields are needed for
+        persistence/export, so drop ``messages`` and coerce any remaining
+        non-serializable value to its string form.
+        """
+        if not isinstance(state, dict):
+            return state
+
+        def _convert(value):
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            if isinstance(value, (list, tuple)):
+                return [_convert(v) for v in value]
+            if isinstance(value, dict):
+                return {str(k): _convert(v) for k, v in value.items()}
+            # LangChain message objects and any other unknown types -> string form.
+            content = getattr(value, "content", None)
+            if content is not None and (isinstance(content, str) or content == ""):
+                return content
+            return str(value)
+
+        out = {}
+        for key, value in state.items():
+            if key == "messages":
+                # Large, non-serializable and not needed for reports/export.
+                continue
+            out[key] = _convert(value)
+        return out
+
     async def run(self) -> Dict[str, Any]:
         """Run the analysis and return final state."""
         self.running = True
@@ -116,7 +180,7 @@ class AnalysisService:
             self.stats_handler = StatsCallbackHandler()
 
             self.graph = TradingAgentsGraph(
-                selected_analyst_keys=analyst_keys,
+                selected_analysts=analyst_keys,
                 config=run_cfg,
                 debug=True,
                 callbacks=[self.stats_handler],
@@ -147,15 +211,26 @@ class AnalysisService:
             await self._emit(make_agent_status_event(first_analyst, "in_progress"))
             analyst_wall_time_tracker.mark_started(analyst_keys[0])
 
-            # Stream the analysis
-            final_state = None
+            # Stream the analysis. Streamed chunks are per-node deltas, not full
+            # state, so merge them (same as the CLI) to ensure every report field
+            # populated across the run is present in the final state.
+            final_state: Dict[str, Any] = {}
             async for chunk in self._stream_analysis(init_agent_state, args, analyst_wall_time_tracker, normalized_ticker, asset_type):
-                final_state = chunk
+                final_state.update(chunk)
 
             # Build final report
             final_report = self._build_final_report(final_state)
 
-            await update_run_status(self.run_id, "completed", report=final_report)
+            # Save CLI-equivalent report files to the per-run reports directory and
+            # persist both the compiled report and a JSON-safe final state.
+            report_path = self._save_report_files(final_state, normalized_ticker)
+
+            await update_run_status(
+                self.run_id, "completed",
+                report=final_report,
+                final_state=self._sanitize_state(final_state),
+                report_path=str(report_path) if report_path else None,
+            )
             await self._emit(make_complete_event(self.run_id))
 
             return final_report
@@ -255,7 +330,7 @@ class AnalysisService:
             await self._update_analyst_statuses(chunk)
 
             # Handle report sections
-            self._handle_report_sections(chunk)
+            await self._handle_report_sections(chunk)
 
             # Emit stats periodically
             if self.stats_handler:
@@ -347,7 +422,7 @@ class AnalysisService:
                 self.message_buffer.update_agent_status("Bull Researcher", "in_progress")
                 await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
 
-    def _handle_report_sections(self, chunk: Dict[str, Any]) -> None:
+    async def _handle_report_sections(self, chunk: Dict[str, Any]) -> None:
         """Handle research, trading, and risk report sections."""
         # Research team
         if chunk.get("investment_debate_state"):
@@ -357,30 +432,30 @@ class AnalysisService:
             judge = debate.get("judge_decision", "").strip()
 
             if bull or bear:
-                self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
-                self._emit(make_agent_status_event("Bear Researcher", "in_progress"))
+                await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
+                await self._emit(make_agent_status_event("Bear Researcher", "in_progress"))
 
             if bull:
                 content = f"### Bull Researcher Analysis\n{bull}"
                 self.message_buffer.update_report_section("investment_plan", content)
-                self._emit(make_report_section_event("investment_plan", content))
+                await self._emit(make_report_section_event("investment_plan", content))
             if bear:
                 content = f"### Bear Researcher Analysis\n{bear}"
                 self.message_buffer.update_report_section("investment_plan", content)
-                self._emit(make_report_section_event("investment_plan", content))
+                await self._emit(make_report_section_event("investment_plan", content))
             if judge:
                 content = f"### Research Manager Decision\n{judge}"
                 self.message_buffer.update_report_section("investment_plan", content)
-                self._emit(make_report_section_event("investment_plan", content))
-                self._emit(make_agent_status_event("Research Manager", "completed"))
-                self._emit(make_agent_status_event("Trader", "in_progress"))
+                await self._emit(make_report_section_event("investment_plan", content))
+                await self._emit(make_agent_status_event("Research Manager", "completed"))
+                await self._emit(make_agent_status_event("Trader", "in_progress"))
 
         # Trading team
         if chunk.get("trader_investment_plan"):
             content = chunk["trader_investment_plan"]
             self.message_buffer.update_report_section("trader_investment_plan", content)
-            self._emit(make_report_section_event("trader_investment_plan", content))
-            self._emit(make_agent_status_event("Trader", "completed"))
+            await self._emit(make_report_section_event("trader_investment_plan", content))
+            await self._emit(make_agent_status_event("Trader", "completed"))
 
         # Risk management
         if chunk.get("risk_debate_state"):
@@ -392,10 +467,10 @@ class AnalysisService:
             ]:
                 hist = risk.get(agent_key, "").strip()
                 if hist:
-                    self._emit(make_agent_status_event(label, "in_progress"))
+                    await self._emit(make_agent_status_event(label, "in_progress"))
 
             if risk.get("judge_decision"):
-                self._emit(make_agent_status_event("Portfolio Manager", "completed"))
+                await self._emit(make_agent_status_event("Portfolio Manager", "completed"))
 
     def _build_final_report(self, final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Build the final compiled report from state."""

@@ -1,5 +1,6 @@
 # Local files
 .tradingagents
+tradingagents.db
 node_modules/
 certs
 

@@ -22,7 +22,8 @@ function App() {
     const urlRunId = params.get('run_id')
     if (urlRunId) {
       setRunId(urlRunId)
-      setView('dashboard')
+      const urlView = params.get('view')
+      setView(urlView === 'report' ? 'report' : urlView === 'history' ? 'history' : 'dashboard')
     }
   }, [])
 
@@ -64,12 +65,12 @@ function App() {
           <Route
             path="/"
             element={
-              <Layout>
+              <>
                 {view === 'wizard' && <Wizard onStart={handleStartAnalysis} />}
-                {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} />}
+                {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} onViewReport={handleViewReport} />}
                 {view === 'report' && runId && <ReportView runId={runId} onBack={handleNewAnalysis} />}
                 {view === 'history' && <History onViewReport={handleViewReport} onNew={handleNewAnalysis} />}
-              </Layout>
+              </>
             }
           />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -56,6 +56,7 @@ interface AnalysisState {
   error: string | null
   setComplete: (runId: string) => void
   setError: (error: string) => void
+  markAllAgentsComplete: () => void
 
   // Reset
   reset: () => void
@@ -102,6 +103,12 @@ export const useAnalysisStore = create<AnalysisState>()((set) => ({
   })),
 
   setComplete: (runId) => set({ completed: true, runId, error: null }),
+
+  markAllAgentsComplete: () => set((state) => ({
+    agentStatus: Object.fromEntries(
+      Object.keys(state.agentStatus).map((a) => [a, 'completed' as const])
+    ),
+  })),
 
   setError: (error) => set({ error, completed: true }),
 

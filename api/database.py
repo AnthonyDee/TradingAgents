@@ -24,9 +24,18 @@ async def init_db() -> None:
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 report_json TEXT,
-                error_message TEXT
+                error_message TEXT,
+                final_state_json TEXT,
+                report_path TEXT
             )
         """)
+        # Migration: add columns for older databases that predate them.
+        cols = await db.execute_fetchall("PRAGMA table_info(runs)")
+        existing = {c[1] for c in cols}
+        if "final_state_json" not in existing:
+            await db.execute("ALTER TABLE runs ADD COLUMN final_state_json TEXT")
+        if "report_path" not in existing:
+            await db.execute("ALTER TABLE runs ADD COLUMN report_path TEXT")
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC)
         """)
@@ -60,7 +69,9 @@ async def update_run_status(
     run_id: str,
     status: str,
     report: Optional[Dict[str, Any]] = None,
-    error: Optional[str] = None
+    error: Optional[str] = None,
+    final_state: Optional[Dict[str, Any]] = None,
+    report_path: Optional[str] = None,
 ) -> None:
     """Update run status, optionally with final report or error."""
     now = datetime.utcnow().isoformat()
@@ -68,10 +79,18 @@ async def update_run_status(
         if report is not None:
             await db.execute(
                 """
-                UPDATE runs SET status = ?, completed_at = ?, report_json = ?
+                UPDATE runs SET status = ?, completed_at = ?, report_json = ?,
+                    final_state_json = ?, report_path = ?
                 WHERE id = ?
                 """,
-                (status, now, json.dumps(report), run_id)
+                (
+                    status,
+                    now,
+                    json.dumps(report),
+                    json.dumps(final_state) if final_state is not None else None,
+                    report_path,
+                    run_id,
+                )
             )
         elif error is not None:
             await db.execute(

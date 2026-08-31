@@ -45,7 +45,7 @@ export function AgentGrid() {
                 return (
                   <div key={agent} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors">
                     <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <Icon className={cn('h-4 w-4 animate-spin-slow', statusColors[status])} />
+                      <Icon className={cn('h-4 w-4', statusColors[status], status === 'in_progress' && 'animate-spin')} />
                       <span className="text-sm font-medium truncate">{agent}</span>
                     </div>
                     <span className={cn('text-xs font-medium px-2 py-0.5 rounded', statusColors[status])}>

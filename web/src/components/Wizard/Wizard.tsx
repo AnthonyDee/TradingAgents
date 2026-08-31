@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from 'react'
-import { ChevronRight, Check } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { Button, Card, CardContent } from '@/components/ui'
 import { useWizardStore } from '@/store/wizard'
 import { Step1Ticker } from './Step1Ticker'
@@ -110,12 +110,6 @@ export function Wizard({ onStart }: { onStart: (config: any) => void }) {
             <Button variant="outline" onClick={handleBack} disabled={currentStep === 1}>
               Back
             </Button>
-            {currentStep === steps.length ? null : (
-              <Button onClick={handleNext}>
-                Continue
-                <ChevronRight className="ml-2 h-4 w-4" />
-              </Button>
-            )}
           </div>
         </div>
       </div>

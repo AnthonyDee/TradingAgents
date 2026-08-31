@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from api.database import init_db, create_run, get_run, get_run_report, list_runs, count_runs
 from api.service import enqueue_analysis, RunConfig, analysis_queue
@@ -21,6 +21,7 @@ from api.schemas import (
 )
 from api.websocket import manager
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.reporting import build_epub, _collect_sections
 from tradingagents.llm_clients.model_catalog import get_model_options
 from cli.utils import _llm_provider_table, filter_analysts_for_asset_type
 from cli.models import AnalystType, AssetType
@@ -245,7 +246,7 @@ async def start_analysis(config: RunConfig):
     return RunCreateResponse(run_id=run_id)
 
 
-@app.get("/api/v1/analyze/{run_id}/stream")
+@app.websocket("/api/v1/analyze/{run_id}/stream")
 async def stream_analysis(websocket: WebSocket, run_id: str):
     """WebSocket endpoint for real-time analysis updates."""
     await manager.connect(run_id, websocket)
@@ -289,6 +290,156 @@ async def get_report(run_id: str):
         config=json.loads(run["config_json"]),
         report=report,
     )
+
+
+@app.get("/api/v1/reports/{run_id}/export")
+async def export_report(run_id: str, format: str = Query("md", pattern="^(md|epub)$")):
+    """Export a run's report in the CLI's on-disk format.
+
+    ``format=md`` returns the consolidated ``complete_report.md``; ``format=epub``
+    returns the CLI-style EPUB. Prefers the files persisted to disk by the run
+    (``report_path``), falling back to in-memory generation from the stored raw
+    final state when they are unavailable (e.g. older runs).
+    """
+    run = await get_run(run_id)
+    if not run:
+        raise HTTPException(404, "Run not found")
+
+    config = json.loads(run["config_json"]) if run["config_json"] else {}
+    ticker = run["ticker"]
+
+    if format == "md":
+        md_bytes = _build_markdown_export(run, config)
+        if md_bytes is None:
+            raise HTTPException(404, "No report content available for this run")
+        return Response(
+            content=md_bytes,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{ticker}_report.md"'},
+        )
+
+    # EPUB
+    epub_bytes = _build_epub_export(run, config)
+    if epub_bytes is None:
+        raise HTTPException(404, "No report content available for this run")
+    date_suffix = run["analysis_date"]
+    return Response(
+        content=epub_bytes,
+        media_type="application/epub+zip",
+        headers={"Content-Disposition": f'attachment; filename="{ticker}_{date_suffix}.epub"'},
+    )
+
+
+def _run_final_state(run) -> Optional[dict]:
+    """Return the best-available final state for a run.
+
+    Prefers the raw per-agent state persisted since the report-export feature
+    landed (``final_state_json``), then synthesizes a close equivalent from the
+    structured ``report_json`` so older completed runs can still export.
+    """
+    if run.get("final_state_json"):
+        try:
+            state = json.loads(run["final_state_json"])
+            if isinstance(state, dict):
+                return state
+        except Exception:
+            pass
+
+    if not run.get("report_json"):
+        return None
+    try:
+        rj = json.loads(run["report_json"])
+    except Exception:
+        return None
+    if not isinstance(rj, dict):
+        return None
+
+    state = {}
+    analysts = rj.get("analyst_reports") or {}
+    if isinstance(analysts, dict):
+        for key, name in [
+            ("market_report", "Market Analyst"),
+            ("sentiment_report", "Sentiment Analyst"),
+            ("news_report", "News Analyst"),
+            ("fundamentals_report", "Fundamentals Analyst"),
+        ]:
+            for k, v in analysts.items():
+                if k == name and isinstance(v, str):
+                    state[key] = v
+                    break
+
+    research = rj.get("research_team") or {}
+    if isinstance(research, dict):
+        debate = {}
+        for k, v in research.items():
+            if not isinstance(v, str):
+                continue
+            kl = k.lower()
+            if "bull" in kl:
+                debate["bull_history"] = v
+            elif "bear" in kl:
+                debate["bear_history"] = v
+            elif "manager" in kl:
+                debate["judge_decision"] = v
+        if debate:
+            state["investment_debate_state"] = debate
+
+    if rj.get("trader_plan") is not None:
+        state["trader_investment_plan"] = rj["trader_plan"]
+
+    risk = rj.get("risk_management") or {}
+    pm = rj.get("portfolio_manager_decision")
+    if isinstance(risk, dict) or pm:
+        rd = {}
+        if isinstance(risk, dict):
+            for k, v in risk.items():
+                if not isinstance(v, str):
+                    continue
+                rd[k.lower()] = v
+        if pm:
+            rd["judge_decision"] = pm
+        if rd:
+            state["risk_debate_state"] = rd
+
+    return state or None
+
+
+def _build_markdown_export(run, config) -> Optional[bytes]:
+    """Return CLI-identical consolidated markdown for a run, or None if empty."""
+    # Prefer the persisted complete_report.md, if present on disk.
+    report_path = run.get("report_path")
+    if report_path:
+        md_file = Path(report_path) / "complete_report.md"
+        if md_file.exists():
+            return md_file.read_bytes()
+
+    # Fall back to regenerating from the best-available final state.
+    final_state = _run_final_state(run)
+    if final_state and _collect_sections(final_state):
+        from datetime import datetime
+        header = f"# {run['ticker']} Report\n\n{datetime.now().strftime('%A, %B %d, %Y %H:%M %p')}\n\n"
+        content = header + "\n\n".join(_collect_sections(final_state))
+        return content.encode("utf-8")
+    return None
+
+
+def _build_epub_export(run, config) -> Optional[bytes]:
+    """Return CLI-identical EPUB bytes for a run, or None if empty."""
+    # Prefer the persisted .epub, if present on disk.
+    report_path = run.get("report_path")
+    if report_path:
+        epubs = sorted(Path(report_path).glob("*.epub"))
+        if epubs:
+            return epubs[0].read_bytes()
+
+    # Fall back to building in memory from the best-available final state.
+    final_state = _run_final_state(run)
+    if final_state:
+        try:
+            return build_epub(final_state, run["ticker"], config)
+        except Exception:
+            return None
+    return None
 
 
 @app.get("/api/v1/history", response_model=HistoryResponse)

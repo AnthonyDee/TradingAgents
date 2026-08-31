@@ -19,6 +19,7 @@ export function ReportView({ runId, onBack }: ReportViewProps) {
   const [report, setReport] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchReport = async () => {
@@ -71,32 +72,22 @@ export function ReportView({ runId, onBack }: ReportViewProps) {
     { key: 'portfolio_manager_decision', title: 'Portfolio Manager Decision', icon: '🎯' },
   ].filter(s => report[s.key])
 
-  const exportMarkdown = () => {
-    let md = `# TradingAgents Analysis Report\n\n`
-    md += `**Ticker:** ${config.ticker}\n`
-    md += `**Date:** ${config.analysis_date}\n`
-    md += `**Provider:** ${config.llm_provider}\n`
-    md += `**Models:** Quick=${config.shallow_thinker}, Deep=${config.deep_thinker}\n\n`
+  const exportMarkdown = async () => {
+    setExportError(null)
+    try {
+      await api.downloadReportExport(runId, 'md')
+    } catch (e: any) {
+      setExportError(e.message)
+    }
+  }
 
-    sections.forEach(s => {
-      md += `## ${s.title}\n\n`
-      const content = report[s.key]
-      if (typeof content === 'object') {
-        Object.entries(content).forEach(([k, v]) => {
-          md += `### ${k}\n\n${v}\n\n`
-        })
-      } else {
-        md += `${content}\n\n`
-      }
-    })
-
-    const blob = new Blob([md], { type: 'text/markdown' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `tradingagents-${config.ticker}-${config.analysis_date}.md`
-    a.click()
-    URL.revokeObjectURL(url)
+  const exportEpub = async () => {
+    setExportError(null)
+    try {
+      await api.downloadReportExport(runId, 'epub')
+    } catch (e: any) {
+      setExportError(e.message)
+    }
   }
 
   return (
@@ -114,11 +105,20 @@ export function ReportView({ runId, onBack }: ReportViewProps) {
             <Download className="mr-2 h-4 w-4" />
             Export MD
           </Button>
+          <Button variant="outline" onClick={exportEpub}>
+            <BookOpen className="mr-2 h-4 w-4" />
+            Export EPUB
+          </Button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl mx-auto space-y-6">
+          {exportError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+              Export failed: {exportError}
+            </div>
+          )}
           {/* Config Summary */}
           <Card>
             <CardHeader>
