@@ -45,7 +45,7 @@ export interface WizardState {
 }
 
 const defaultState = {
-  ticker: 'SPY',
+  ticker: '',
   assetType: 'stock' as const,
   analysisDate: new Date().toISOString().split('T')[0],
   outputLanguage: 'English',

@@ -89,9 +89,6 @@ export function Step1Ticker({ onNext }: { onNext: () => void }) {
             ))}
           </div>
         )}
-        <p className="mt-1 text-sm text-muted-foreground">
-          Enter ticker with exchange suffix (e.g., 0700.HK, BTC-USD)
-        </p>
       </div>
 
       <Button onClick={onNext} disabled={!isValid} className="w-full">

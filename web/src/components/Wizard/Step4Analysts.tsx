@@ -39,7 +39,7 @@ export function Step4Analysts({ onNext }: { onNext: () => void }) {
           ))}
         </div>
         <p className="mt-2 text-sm text-muted-foreground">
-          Select at least one analyst. Fundamentals Analyst not available for crypto.
+          Fundamentals Analyst not available for crypto.
         </p>
       </div>
 

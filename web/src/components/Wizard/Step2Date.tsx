@@ -19,9 +19,6 @@ export function Step2Date({ onNext }: { onNext: () => void }) {
           max={today}
           className="mt-1"
         />
-        <p className="mt-1 text-sm text-muted-foreground">
-          Select the date for analysis (cannot be in the future)
-        </p>
       </div>
 
       <Button onClick={onNext} className="w-full">

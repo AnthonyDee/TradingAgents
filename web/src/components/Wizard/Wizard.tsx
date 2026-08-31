@@ -47,7 +47,7 @@ export function Wizard({ onStart }: { onStart: (config: any) => void }) {
   const CurrentComponent = currentStepData.component
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col lg:flex-row">
       {/* Progress Sidebar */}
       <div className="hidden lg:flex lg:w-64 flex-shrink-0 border-r bg-card">
         <div className="p-6 border-b">

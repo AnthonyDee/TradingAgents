@@ -91,17 +91,21 @@ class AnalysisService:
     def _save_report_files(self, final_state: Dict[str, Any], ticker: str) -> Optional[Path]:
         """Write CLI-equivalent report files to the per-run reports directory.
 
-        Mirrors the CLI's on-disk layout (cli/main.py): reports live under
-        ``results_dir/<TICKER>/<analysis_date>/reports`` and include the per-
-        section markdown files, ``complete_report.md``, and the ``.epub``.
+        Each run gets its own time-stamped directory so earlier reports are
+        never overwritten. Reports live under
+        ``results_dir/<TICKER>/<analysis_date>_<HHMMSS>/reports`` and include
+        the per-section markdown files, ``complete_report.md``, and the
+        ``.epub``.
         """
         try:
             cfg = self._build_run_config()
             results_dir = Path(cfg.get("results_dir") or DEFAULT_CONFIG["results_dir"])
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            run_dir = f"{self.config.analysis_date}_{timestamp}"
             report_dir = (
                 results_dir
                 / self._safe_component(ticker)
-                / self.config.analysis_date
+                / run_dir
                 / "reports"
             )
             report_dir.mkdir(parents=True, exist_ok=True)

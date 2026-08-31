@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RotateCcw, FileText, BarChart3, CheckCircle2 } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { AgentGrid } from './AgentGrid'
@@ -22,6 +22,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
   const { completed, error, runId: storeRunId } = useAnalysisStore()
   const { connected } = useAnalysisWS(runId)
   const notifiedRef = useRef(false)
+  const [logExpanded, setLogExpanded] = useState(false)
 
   useEffect(() => {
     if (completed && storeRunId === runId && !notifiedRef.current) {
@@ -100,7 +101,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
           </div>
         </div>
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 grid lg:grid-cols-[60%_40%] overflow-hidden">
+          <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[35%_65%]' : 'grid-cols-1 lg:grid-cols-[60%_40%]'}`}>
             <div className="flex flex-col border-r">
               <div className="p-4 border-b">
                 <h2 className="font-semibold">Agent Status — Complete</h2>
@@ -110,11 +111,11 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
               </div>
             </div>
             <div className="flex flex-col">
-              <div className="p-4 border-b">
+              <div className="p-4 border-b flex items-center justify-between">
                 <h2 className="font-semibold">Activity Log</h2>
               </div>
               <div className="flex-1 overflow-hidden">
-                <ActivityLog />
+                <ActivityLog expanded={logExpanded} onExpandedChange={setLogExpanded} />
               </div>
             </div>
           </div>
@@ -143,7 +144,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
         </div>
       </div>
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 grid lg:grid-cols-[60%_40%] overflow-hidden">
+        <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[35%_65%]' : 'grid-cols-1 lg:grid-cols-[60%_40%]'}`}>
           <div className="flex flex-col border-r">
             <div className="p-4 border-b">
               <h2 className="font-semibold">Agent Progress</h2>
@@ -153,11 +154,11 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
             </div>
           </div>
           <div className="flex flex-col">
-            <div className="p-4 border-b">
+            <div className="p-4 border-b flex items-center justify-between">
               <h2 className="font-semibold">Activity Log</h2>
             </div>
             <div className="flex-1 overflow-hidden">
-              <ActivityLog />
+              <ActivityLog expanded={logExpanded} onExpandedChange={setLogExpanded} />
             </div>
           </div>
         </div>

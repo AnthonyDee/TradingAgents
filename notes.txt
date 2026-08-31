@@ -6,26 +6,12 @@ sudo sysctl iogpu.wired_limit_mb=43008 (42 current - max no other apps)
 sudo sysctl iogpu.wired_limit_mb=41984 (41)
 sudo sysctl iogpu.wired_limit_mb=40960 (40)
 
+auto load:
 sudo touch /etc/sysctl.conf && echo "iogpu.wired_limit_mb=43008" | sudo tee -a /etc/sysctl.conf
 
 
-# 1. Activate env & install
-conda activate tradingagents
-pip install -e ".[dev]"
-cd web && npm ci && npm run build
-
-# 2. Generate cert
-mkdir -p certs && ./scripts/gen_cert.sh
-
-# 3. Configure nginx
-sudo cp nginx/tradingagents.conf /etc/nginx/sites-available/
-sudo ln -sf /etc/nginx/sites-available/tradingagents.conf /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-
-# 4. Start API
-sudo cp systemd/tradingagents-api.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now tradingagents-api
-
-
+start server
 brew services start nginx
+
+restart api server
+launchctl kickstart -k gui/$(id -u)/com.tradingagents.api && sleep 2 && launchctl list | grep tradingagents
