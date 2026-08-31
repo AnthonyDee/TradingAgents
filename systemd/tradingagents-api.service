@@ -1,0 +1,21 @@
+[Unit]
+Description=TradingAgents Web API
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/path/to/TradingAgents
+EnvironmentFile=/path/to/TradingAgents/.env
+ExecStart=/Users/e/miniforge3/envs/tradingagents/bin/uvicorn api.server:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+# Security
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/path/to/TradingAgents/data
+
+[Install]
+WantedBy=multi-user.target
