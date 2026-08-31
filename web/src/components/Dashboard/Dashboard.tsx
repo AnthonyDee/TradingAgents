@@ -9,6 +9,7 @@ import { ReportPane } from './ReportPane'
 import { FooterStats } from './FooterStats'
 import { useAnalysisStore } from '@/store/analysis'
 import { useAnalysisWS } from '@/lib/ws'
+import { api } from '@/lib/api'
 import MarkdownRenderer from '@/lib/markdown'
 import { toast } from '@/hooks/use-toast'
 
@@ -23,6 +24,17 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
   const { connected } = useAnalysisWS(runId)
   const notifiedRef = useRef(false)
   const [logExpanded, setLogExpanded] = useState(false)
+  const [ticker, setTicker] = useState<string>('')
+
+  useEffect(() => {
+    let active = true
+    api.getReport(runId)
+      .then((report) => {
+        if (active && report?.config?.ticker) setTicker(report.config.ticker)
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [runId])
 
   useEffect(() => {
     if (completed && storeRunId === runId && !notifiedRef.current) {
@@ -101,7 +113,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
           </div>
         </div>
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[35%_65%]' : 'grid-cols-1 lg:grid-cols-[60%_40%]'}`}>
+          <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[25%_75%]' : 'grid-cols-1 lg:grid-cols-[33%_67%]'}`}>
             <div className="flex flex-col border-r">
               <div className="p-4 border-b">
                 <h2 className="font-semibold">Agent Status — Complete</h2>
@@ -135,7 +147,9 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between p-4 border-b">
-        <h1 className="text-xl font-semibold">Live Analysis</h1>
+        <h1 className="text-xl font-semibold">
+          Live analysis {ticker ? <span className="font-mono text-primary">of {ticker}</span> : ''}
+        </h1>
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />
           <span className="text-sm text-muted-foreground">
@@ -144,7 +158,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
         </div>
       </div>
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[35%_65%]' : 'grid-cols-1 lg:grid-cols-[60%_40%]'}`}>
+        <div className={`flex-1 grid overflow-hidden ${logExpanded ? 'grid-cols-1 xl:grid-cols-[25%_75%]' : 'grid-cols-1 lg:grid-cols-[33%_67%]'}`}>
           <div className="flex flex-col border-r">
             <div className="p-4 border-b">
               <h2 className="font-semibold">Agent Progress</h2>

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import io
 import re
+import time
 import traceback
 from tradingagents.default_config import DEFAULT_CONFIG
 try:
@@ -21,6 +22,139 @@ try:
     HAVE_EPUB = True
 except Exception:
     HAVE_EPUB = False
+
+try:
+    import requests as _requests
+    HAVE_REQUESTS = True
+except Exception:
+    HAVE_REQUESTS = False
+
+# Wikimedia Commons requires a descriptive User-Agent; use for all requests.
+_WIKIMEDIA_UA = "TradingAgents/1.0 (https://github.com/TradingAgents; analysis report cover)"
+
+# Short topical query derived from the report's key idea; falls back to ticker.
+_COVER_FALLBACK_QUERIES = {
+    "market": "stock market trading chart",
+    "trading": "stock market trading chart",
+    "investment": "investment finance growth",
+    "finance": "finance money economy",
+    "growth": "economic growth finance",
+    "stock": "stock market trading",
+    "buy": "stock market trading",
+    "sell": "stock market trading",
+    "hold": "stock market trading",
+}
+
+
+def _extract_cover_query(final_state: dict, ticker: str) -> str:
+    """Derive a short image-search query from the report's key idea.
+
+    Prefers the Portfolio Manager decision, then the Trading plan, collapsing
+    to a short topical phrase. Falls back to the ticker if nothing usable is
+    found.
+    """
+    candidates = []
+    risk = final_state.get("risk_debate_state") or {}
+    if risk.get("judge_decision"):
+        candidates.append(risk["judge_decision"])
+    if final_state.get("trader_investment_plan"):
+        candidates.append(final_state["trader_investment_plan"])
+
+    text = "\n".join(c for c in candidates if isinstance(c, str)).strip()
+    if not text:
+        return ticker
+
+    words = re.findall(r"[A-Za-z][A-Za-z0-9\-']*", text)
+    common = {
+        "the", "a", "an", "of", "and", "or", "to", "for", "on", "in", "with",
+        "is", "are", "be", "it", "this", "that", "we", "recommend",
+        "recommends", "our", "as", "at", "by", "from", "position", "weight",
+        "target", "price", "based", "analysis", "report", "analyst", "review",
+    }
+    topic_candidates = [w.lower() for w in words if w.lower() not in common]
+    for label in ("buy", "sell", "hold", "growth", "investment", "market",
+                  "stock", "trading", "finance"):
+        if label in topic_candidates:
+            return _COVER_FALLBACK_QUERIES[label]
+
+    if topic_candidates:
+        query = " ".join(dict.fromkeys(topic_candidates[:4]))
+        return query.capitalize()
+    return ticker
+
+
+def _fetch_cover_image(query: str, max_bytes: int = 4 * 1024 * 1024) -> bytes | None:
+    """Fetch a JPEG/PNG photo for ``query`` from Wikimedia Commons (keyless).
+
+    Returns the image bytes (an ~800px thumbnail) or ``None`` on any failure.
+    Never raises.
+    """
+    if not HAVE_REQUESTS:
+        return None
+    try:
+        res = _requests.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query",
+                "format": "json",
+                "generator": "search",
+                "gsrsearch": f"filetype:bitmap {query}",
+                "gsrlimit": 8,
+                "gsrnamespace": 6,
+                "prop": "imageinfo",
+                "iiprop": "url|mime|size",
+                "iiurlwidth": 800,
+            },
+            headers={"User-Agent": _WIKIMEDIA_UA},
+            timeout=15,
+        )
+        res.raise_for_status()
+        pages = res.json().get("query", {}).get("pages", {})
+        if not pages:
+            return None
+
+        def _area(info):
+            w = info.get("width") or 0
+            h = info.get("height") or 0
+            return (w * h, w, h)
+
+        # Sort by: JPEG first, then landscape (width >= height), then area.
+        ranked = []
+        for page in pages.values():
+            info = (page.get("imageinfo") or [{}])[0]
+            mime = info.get("mime") or ""
+            url = info.get("thumburl") or info.get("url")
+            if mime not in ("image/jpeg", "image/png") or not url:
+                continue
+            ranked.append((mime, _area(info), url))
+        ranked.sort(key=lambda t: (t[0] == "image/jpeg", t[1][1] >= t[1][2], t[1][0]), reverse=True)
+        if not ranked:
+            return None
+
+        # Try the top few candidates; Wikimedia throttles (429) under load, so
+        # retry with backoff and fall through to the next image on failure.
+        ua = {"User-Agent": _WIKIMEDIA_UA}
+        for attempt in range(3):
+            for mime, _sz, url in ranked[:4]:
+                try:
+                    img = _requests.get(url, headers=ua, timeout=20)
+                    if img.status_code == 429:
+                        continue  # throttled -> try next candidate
+                    img.raise_for_status()
+                    ctype = img.headers.get("Content-Type", "")
+                    if not ctype.startswith("image/"):
+                        continue
+                    if len(img.content) > max_bytes:
+                        continue
+                    return img.content
+                except Exception:
+                    continue
+            if attempt < 2:
+                # brief backoff before retrying the whole candidate list
+                time.sleep(1.0)
+        return None
+    except Exception:
+        return None
 
 
 def _prepare_markdown_for_epub(md: str) -> str:
@@ -98,13 +232,16 @@ def _collect_sections(final_state: dict) -> list:
     return sections
 
 
-def build_epub(final_state: dict, ticker: str, config: dict | None = None) -> bytes:
+def build_epub(final_state: dict, ticker: str, config: dict | None = None, cover_image: bytes | None = None) -> bytes:
     """Build an EPUB byte string for a run's final state.
 
     Produces the exact same EPUB format the CLI writes (cover page, analyst
     sub-chapters nested under their parent, per-section chapters, styled
     tables). Returns the raw EPUB bytes so callers can serve or stream it
     without writing to disk. Raises if ebooklib isn't available.
+
+    ``cover_image`` (optional) embeds an image on the cover page, above the
+    ticker title, date, and author.
     """
     if not HAVE_EPUB:
         raise RuntimeError(
@@ -125,18 +262,45 @@ def build_epub(final_state: dict, ticker: str, config: dict | None = None) -> by
     book.set_title(f"{ticker} Analysis Report")
     book.set_language("en")
 
-    cover_html = f"""
-    <html>
-    <head><title>{ticker} Report</title></head>
-    <body style="text-align:center; padding-top:3em;">
-        <h1>{ticker} Analysis Report</h1>
-        <p style="font-size:1.2em;">{now.strftime('%A')}</p>
-        <p style="font-size:1.2em;">{now.strftime('%B %d, %Y')}</p>
-        <p style="font-size:1.2em;">{now.strftime('%I:%M %p')}</p>
-        <p>Author: {author_name}</p>
-    </body>
-    </html>
-    """
+    cover_image_item = None
+    if cover_image:
+        cover_image_item = epub.EpubImage(
+            media_type="image/jpeg",
+            content=cover_image,
+            file_name="cover_image.jpg",
+        )
+        book.add_item(cover_image_item)
+
+    if cover_image_item:
+        cover_html = f"""
+        <html>
+        <head><title>{ticker} Report</title></head>
+        <body style="text-align:center;">
+            <div style="padding-top:2em;">
+                <img src="cover_image.jpg" alt="{ticker} cover"
+                     style="width:75%; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.25);"/>
+            </div>
+            <h1 style="margin-top:1.2em; margin-bottom:0.2em;">{ticker} Analysis Report</h1>
+            <p style="font-size:1.2em;">{now.strftime('%A')}</p>
+            <p style="font-size:1.2em;">{now.strftime('%B %d, %Y')}</p>
+            <p style="font-size:1.2em;">{now.strftime('%I:%M %p')}</p>
+            <p>Author: {author_name}</p>
+        </body>
+        </html>
+        """
+    else:
+        cover_html = f"""
+        <html>
+        <head><title>{ticker} Report</title></head>
+        <body style="text-align:center; padding-top:3em;">
+            <h1>{ticker} Analysis Report</h1>
+            <p style="font-size:1.2em;">{now.strftime('%A')}</p>
+            <p style="font-size:1.2em;">{now.strftime('%B %d, %Y')}</p>
+            <p style="font-size:1.2em;">{now.strftime('%I:%M %p')}</p>
+            <p>Author: {author_name}</p>
+        </body>
+        </html>
+        """
     cover = epub.EpubHtml(title=f"{ticker} Report", file_name="cover.xhtml", content=cover_html)
     book.add_item(cover)
 
@@ -300,7 +464,19 @@ def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | 
         try:
             date_suffix = datetime.now().strftime("%Y-%m-%d")
             epub_path = save_path / f"{ticker}_{date_suffix}.epub"
-            epub_path.write_bytes(build_epub(final_state, ticker, config))
+
+            # Fetch a cover photo related to the report's key idea (non-fatal).
+            cover_image = None
+            try:
+                cover_query = _extract_cover_query(final_state, ticker)
+                cover_image = _fetch_cover_image(cover_query)
+                if cover_image:
+                    (save_path / "cover_image.jpg").write_bytes(cover_image)
+            except Exception:
+                cover_image = None
+
+            epub_bytes = build_epub(final_state, ticker, config, cover_image=cover_image)
+            epub_path.write_bytes(epub_bytes)
         except Exception:
             traceback.print_exc()
             # fall back to just markdown
