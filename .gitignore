@@ -1,5 +1,7 @@
 # Local files
 .tradingagents
+node_modules/
+certs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
