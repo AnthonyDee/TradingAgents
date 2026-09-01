@@ -60,6 +60,12 @@ class AgentState(MessagesState):
     ]
     fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]
 
+    # How many times each analyst has been re-run by the pre-research
+    # completion gate because it produced an empty report. Bounds re-runs so a
+    # model that never writes a report can't loop forever before the run
+    # force-continues to the research team.
+    analyst_reruns: Annotated[dict[str, int], "Per-analyst re-run count"]
+
     # researcher team discussion step
     investment_debate_state: Annotated[
         InvestDebateState, "Current state of the debate on if to invest or not"

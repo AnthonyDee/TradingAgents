@@ -89,24 +89,22 @@ class AnalysisService:
         return "stock"
 
     def _save_report_files(self, final_state: Dict[str, Any], ticker: str) -> Optional[Path]:
-        """Write CLI-equivalent report files to the per-run reports directory.
+        """Write CLI-equivalent report files to the same directory the CLI uses.
 
-        Each run gets its own time-stamped directory so earlier reports are
-        never overwritten. Reports live under
-        ``results_dir/<TICKER>/<analysis_date>_<HHMMSS>/reports`` and include
-        the per-section markdown files, ``complete_report.md``, and the
-        ``.epub``.
+        The CLI's interactive save defaults to
+        ``<cwd>/reports/<TICKER>_<YYYYmmdd_HHMMSS>`` (see ``cli/main.py``), so
+        the web API writes there too, keeping both interfaces' reports in one
+        place. Each run gets its own time-stamped directory (so same-ticker
+        runs never overwrite each other). Reports include the per-section
+        markdown files, ``complete_report.md``, and the ``.epub``.
         """
         try:
             cfg = self._build_run_config()
-            results_dir = Path(cfg.get("results_dir") or DEFAULT_CONFIG["results_dir"])
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            run_dir = f"{self.config.analysis_date}_{timestamp}"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_dir = (
-                results_dir
-                / self._safe_component(ticker)
-                / run_dir
+                Path.cwd()
                 / "reports"
+                / f"{self._safe_component(ticker)}_{timestamp}"
             )
             report_dir.mkdir(parents=True, exist_ok=True)
             write_report_tree(final_state, ticker, report_dir, cfg)
@@ -282,6 +280,7 @@ class AnalysisService:
                 self.agent_status = {}
                 self.report_sections = {}
                 self._processed_message_ids = set()
+                self._analyst_reruns_last = {}
                 self._init_status()
 
             def _init_status(self):
@@ -334,6 +333,9 @@ class AnalysisService:
 
             # Update analyst statuses from reports
             await self._update_analyst_statuses(chunk)
+
+            # Surface pre-research gate re-runs (analyst finished empty, re-running)
+            await self._handle_analyst_reruns(chunk)
 
             # Handle report sections
             await self._handle_report_sections(chunk)
@@ -427,6 +429,27 @@ class AnalysisService:
             if self.message_buffer.agent_status.get("Bull Researcher") == "pending":
                 self.message_buffer.update_agent_status("Bull Researcher", "in_progress")
                 await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
+
+    async def _handle_analyst_reruns(self, chunk: Dict[str, Any]) -> None:
+        """Surface pre-research gate re-runs in the status feed.
+
+        The completion gate (setup.py) bumps ``analyst_reruns`` for an analyst
+        that cleared without a report, routing it back for another attempt.
+        When a counter grows, flip that analyst back to ``in_progress`` so the
+        UI shows it is being re-run rather than stuck "completed" pending the
+        research team.
+        """
+        reruns = chunk.get("analyst_reruns")
+        if not isinstance(reruns, dict):
+            return
+
+        prev = self.message_buffer._analyst_reruns_last or {}
+        for analyst_key, count in reruns.items():
+            if count > prev.get(analyst_key, 0):
+                name = self.message_buffer.ANALYST_NAMES.get(analyst_key, analyst_key)
+                self.message_buffer.update_agent_status(name, "in_progress")
+                await self._emit(make_agent_status_event(name, "in_progress"))
+        self.message_buffer._analyst_reruns_last = dict(reruns)
 
     async def _handle_report_sections(self, chunk: Dict[str, Any]) -> None:
         """Handle research, trading, and risk report sections."""

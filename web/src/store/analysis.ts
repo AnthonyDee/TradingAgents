@@ -50,6 +50,10 @@ interface AnalysisState {
   stats: Stats
   updateStats: (stats: Partial<Stats>) => void
 
+  // Timer
+  startTime: string | null
+  setStartTime: (time: string) => void
+
   // Completion
   completed: boolean
   runId: string | null
@@ -68,6 +72,7 @@ const initialState = {
   messages: [] as Message[],
   reportSections: {} as Record<string, string>,
   stats: { llm_calls: 0, tool_calls: 0, tokens_in: 0, tokens_out: 0 },
+  startTime: null,
   completed: false,
   runId: null,
   error: null,
@@ -103,6 +108,8 @@ export const useAnalysisStore = create<AnalysisState>()((set) => ({
   })),
 
   setComplete: (runId) => set({ completed: true, runId, error: null }),
+
+  setStartTime: (time: string) => set({ startTime: time }),
 
   markAllAgentsComplete: () => set((state) => ({
     agentStatus: Object.fromEntries(

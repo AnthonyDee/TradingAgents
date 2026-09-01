@@ -15,5 +15,7 @@ start server
 brew services start nginx
 
 restart api server
-launchctl kickstart -k gui/$(id -u)/com.tradingagents.api && sleep 2 && launchctl list | grep tradingagents
 launchctl kickstart -k gui/$(id -u)/com.tradingagents.api
+
+rebuild node
+npm run build  

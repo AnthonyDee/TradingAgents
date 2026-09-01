@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import yfinance as yf
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 
 # Import tools from separate utility files
 from tradingagents.agents.utils.core_stock_tools import get_stock_data
@@ -46,6 +46,8 @@ __all__ = [
     "create_msg_delete",
     "extract_text_content",
     "has_text_content",
+    "analyst_tool_loop_stuck",
+    "invoke_no_tools_fallback",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,65 @@ def has_text_content(message: Any) -> bool:
     once the model has already delivered its write-up.
     """
     return bool(extract_text_content(message).strip())
+
+
+def _trailing_empty_rounds(messages) -> int:
+    """Count consecutive trailing assistant messages that carry no text.
+
+    Mirrors the gate's trailing-empty scan in ``graph/conditional_logic.py``.
+    An analyst's tool loop alternates ``AIMessage -> ToolMessage``, so a run
+    of trailing empty ``AIMessage`` entries corresponds to the active
+    analyst's empty reply rounds.
+    """
+    count = 0
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            if not has_text_content(message):
+                count += 1
+                continue
+            break
+        continue
+    return count
+
+
+def analyst_tool_loop_stuck(messages, max_side_retries: int) -> bool:
+    """Return True when the analyst tool loop is about to hit the retry budget.
+
+    The tool-calling analysts re-enter their node once per tool round. Each
+    empty round (an assistant turn that emits tools but no prose) pushes the
+    trailing-empty count up toward ``max_side_retries``; once it reaches
+    ``max_side_retries - 1``, the gate would force-continue with an empty
+    report on the very next check. At that point the analyst should stop
+    waiting for tools and synthesize a textual report, so a never-writing
+    model can't silently drop its section from the final report (#1094).
+    """
+    if max_side_retries is None or max_side_retries <= 0:
+        return False
+    return _trailing_empty_rounds(messages) >= max_side_retries - 1
+
+
+def invoke_no_tools_fallback(prompt, llm, state_messages) -> AIMessage:
+    """Invoke an analyst's prompt WITHOUT tool-binding to force a textual report.
+
+    The tool-calling analysts run ``prompt | llm.bind_tools(tools)``; when a
+    model gets stuck emitting tool calls that return empty data (or simply
+    never writes prose), this runs the same prompt against the bare LLM so it
+    synthesizes a report from whatever the earlier tool rounds already fetched
+    into ``state_messages``. Returns an ``AIMessage`` so the node can hand it
+    to the router as the final (text-bearing) turn, ending the loop cleanly.
+    """
+    chain = prompt | llm
+    result = chain.invoke(state_messages)
+    fallback_text = extract_text_content(result).strip()
+    if not fallback_text:
+        # Last-resort so the section still surfaces in the final report even if
+        # the provider returns an empty assistant turn.
+        fallback_text = (
+            "Analysis of the requested instrument was inconclusive because the "
+            "live data tools returned no usable output this run. Please treat "
+            "this section with caution."
+        )
+    return result if has_text_content(result) else AIMessage(content=fallback_text)
 
 
 def get_language_instruction() -> str:

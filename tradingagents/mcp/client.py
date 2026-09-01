@@ -636,17 +636,38 @@ class MCPClientManager:
         """
         if not self._raw_tools:
             return None
-        candidate = None
-        for name, raw in self._raw_tools.items():
-            if "quote" in name.lower():
-                candidate = (name, raw)
-                break
+
+        def _score(name: str) -> int:
+            """Rank a candidate tool so equity/stock quotes win over crypto.
+
+            The Robinhood MCP exposes both ``get_equity_quotes`` and
+            ``get_crypto_quotes``. The old first-match-on-"quote" logic could
+            bind to the *crypto* quote tool, which then returned empty results
+            (``{"results":[]}``) for a stock ticker, leaving the analysts
+            looping on a live-quote call that never yields data (see the empty
+            market-report bug). Prefer the equity quote, then generic quotes,
+            then price-style tools.
+            """
+            n = name.lower()
+            if "equity" in n or "stock" in n or "instrument" in n:
+                return 0
+            if "crypto" in n or "coin" in n:
+                return 3
+            if "quote" in n:
+                return 1
+            if "price" in n:
+                return 2
+            return 4
+
+        candidates = list(self._raw_tools.items())
+        candidates.sort(key=lambda kv: _score(kv[0]))
+        candidate = candidates[0] if candidates else None
         if candidate is None:
-            for name, raw in self._raw_tools.items():
-                if "price" in name.lower():
-                    candidate = (name, raw)
-                    break
-        if candidate is None:
+            return None
+        # Only bind to something that looks like a quote/price tool; refuse a
+        # completely unrelated first tool (e.g. an order tool) so we never
+        # return a wrapper that silently calls the wrong endpoint.
+        if _score(candidate[0]) > 3:
             return None
 
         name, raw = candidate

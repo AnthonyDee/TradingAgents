@@ -66,6 +66,7 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "analyst_reruns": {},
         }
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:

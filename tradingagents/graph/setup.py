@@ -23,7 +23,11 @@ from tradingagents.agents import (
 from tradingagents.agents.utils.agent_states import AgentState
 
 from .analyst_execution import build_analyst_execution_plan
-from .conditional_logic import ConditionalLogic
+from .conditional_logic import (
+    ConditionalLogic,
+    bump_analyst_rerun,
+    resolve_analyst_gate,
+)
 
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/
@@ -40,6 +44,67 @@ RISK_ANALYSIS_PATH_MAP = {
     "Neutral Analyst": "Neutral Analyst",
     "Portfolio Manager": "Portfolio Manager",
 }
+
+
+def _gate_path_map(
+    agent_node: str,
+    next_node: str | None,
+    research_entry: str,
+) -> dict[str, str]:
+    """Targets a per-analyst completion gate can route to.
+
+    Only the analyst's own agent node, the next analyst node (when present),
+    and the research entry node are valid — all are registered in the graph.
+    """
+    mapping = {agent_node: agent_node}
+    if next_node:
+        mapping[next_node] = next_node
+    mapping[research_entry] = research_entry
+    return mapping
+
+
+def _make_analyst_gate_node(spec):
+    """State-writing node that bumps an analyst's re-run counter when needed.
+
+    Increments ``analyst_reruns[spec.key]`` whenever this analyst cleared
+    without a non-empty report, so the following router can bound re-runs.
+    """
+
+    def analyst_gate_node(state):
+        return {
+            "analyst_reruns": bump_analyst_rerun(
+                state, agent_key=spec.key, report_key=spec.report_key
+            )
+        }
+
+    return analyst_gate_node
+
+
+def _make_analyst_gate_router(
+    *,
+    report_key: str,
+    agent_key: str,
+    agent_node: str,
+    next_node: str | None,
+    research_entry: str,
+    is_last: bool,
+    max_reruns: int,
+):
+    """Router that decides whether to re-run an analyst or advance."""
+
+    def analyst_gate_router(state):
+        return resolve_analyst_gate(
+            state,
+            report_key=report_key,
+            agent_key=agent_key,
+            agent_node=agent_node,
+            next_node=next_node,
+            research_entry=research_entry,
+            is_last=is_last,
+            max_reruns=max_reruns,
+        )
+
+    return analyst_gate_router
 
 
 class GraphSetup:
@@ -82,17 +147,24 @@ class GraphSetup:
                 Defaults to all three when None.
         """
         plan = build_analyst_execution_plan(selected_analysts)
+        max_reruns = getattr(self.conditional_logic, "max_side_retries", 3)
 
         analyst_factories = {
             "market": lambda: create_market_analyst(
-                self.quick_thinking_llm, mcp_tools=self.realtime_quote_tools
+                self.quick_thinking_llm,
+                mcp_tools=self.realtime_quote_tools,
+                max_side_retries=max_reruns,
             ),
             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
             "news": lambda: create_news_analyst(
-                self.quick_thinking_llm, mcp_tools=self.realtime_quote_tools
+                self.quick_thinking_llm,
+                mcp_tools=self.realtime_quote_tools,
+                max_side_retries=max_reruns,
             ),
             "fundamentals": lambda: create_fundamentals_analyst(
-                self.quick_thinking_llm, mcp_tools=self.realtime_quote_tools
+                self.quick_thinking_llm,
+                mcp_tools=self.realtime_quote_tools,
+                max_side_retries=max_reruns,
             ),
         }
 
@@ -166,11 +238,28 @@ class GraphSetup:
         # Start with the first analyst
         workflow.add_edge(START, plan.specs[0].agent_node)
 
-        # Connect analysts in sequence
+        # Connect analysts in sequence. Each analyst is followed by its own
+        # completion gate, which re-runs the analyst if it cleared without a
+        # non-empty report and only advances (to the next analyst, or to the
+        # research team for the last one) once the report is present. Because
+        # the chain is serial, the research team can never start until every
+        # selected analyst has produced a report.
+        research_entry = (
+            "Bull Researcher"
+            if "bull" in enabled_researchers
+            else "Bear Researcher"
+            if "bear" in enabled_researchers
+            else "Research Manager"
+        )
+
         for i, spec in enumerate(plan.specs):
             current_analyst = spec.agent_node
             current_tools = spec.tool_node
             current_clear = spec.clear_node
+            is_last = i == len(plan.specs) - 1
+            next_analyst = (
+                plan.specs[i + 1].agent_node if not is_last else None
+            )
 
             # Add conditional edges for current analyst
             workflow.add_conditional_edges(
@@ -180,20 +269,28 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to the research team junction
-            if i < len(plan.specs) - 1:
-                workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
-            else:
-                # Last analyst's clear node → junction to research team
-                # If bull enabled → Bull Researcher; else if bear enabled → Bear Researcher;
-                # else (no researcher enabled) → skip debate → Research Manager directly.
-                if "bull" in enabled_researchers:
-                    workflow.add_edge(current_clear, "Bull Researcher")
-                elif "bear" in enabled_researchers:
-                    workflow.add_edge(current_clear, "Bear Researcher")
-                else:
-                    # No researcher enabled → route straight to Research Manager
-                    workflow.add_edge(current_clear, "Research Manager")
+            # Completion gate: a state-writing node that counts re-runs, plus a
+            # conditional router that decides whether to re-run this analyst or
+            # advance to the next analyst / research team.
+            gate_node = f"Analyst Gate {current_analyst}"
+            workflow.add_node(
+                gate_node,
+                _make_analyst_gate_node(spec),  # type: ignore[arg-type]
+            )
+            workflow.add_edge(current_clear, gate_node)
+            workflow.add_conditional_edges(
+                gate_node,
+                _make_analyst_gate_router(
+                    report_key=spec.report_key,
+                    agent_key=spec.key,
+                    agent_node=current_analyst,
+                    next_node=next_analyst,
+                    research_entry=research_entry,
+                    is_last=is_last,
+                    max_reruns=max_reruns,
+                ),
+                _gate_path_map(current_analyst, next_analyst, research_entry),
+            )
 
         # ---- Debate routing: Bull / Bear researchers ----
         # Build path maps that include only the enabled researchers + the terminal.

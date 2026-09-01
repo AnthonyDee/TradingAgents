@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    analyst_tool_loop_stuck,
     extract_text_content,
     get_global_news,
     get_instrument_context_from_state,
@@ -9,10 +10,11 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
     get_verified_market_snapshot,
+    invoke_no_tools_fallback,
 )
 
 
-def create_news_analyst(llm, mcp_tools=None):
+def create_news_analyst(llm, mcp_tools=None, max_side_retries=3):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         asset_type = state.get("asset_type", "stock")
@@ -63,8 +65,16 @@ def create_news_analyst(llm, mcp_tools=None):
         result = chain.invoke(state["messages"])
 
         # Only overwrite the report with a non-empty write-up (see the market
-        # analyst for the empty-round clobbering rationale, #1094).
+        # analyst for the empty-round clobbering rationale, #1094). If the
+        # model is stuck in an empty tool loop, synthesize a report once
+        # without tool-binding so this section always appears.
         text = extract_text_content(result).strip()
+        if not text and not (state.get("news_report") or "").strip() and analyst_tool_loop_stuck(
+            state["messages"], max_side_retries
+        ):
+            result = invoke_no_tools_fallback(prompt, llm, state["messages"])
+            text = extract_text_content(result).strip()
+
         ordered_report = text if text else state.get("news_report", "")
 
         return {

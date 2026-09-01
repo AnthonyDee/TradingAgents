@@ -6,6 +6,56 @@ from tradingagents.agents.utils.agent_states import AgentState
 from tradingagents.agents.utils.agent_utils import has_text_content
 
 
+def resolve_analyst_gate(
+    state,
+    *,
+    report_key: str,
+    agent_key: str,
+    agent_node: str,
+    next_node: str | None,
+    research_entry: str,
+    is_last: bool,
+    max_reruns: int,
+) -> str:
+    """Decide where a single analyst's completion gate sends control next.
+
+    Each analyst is followed by its own gate node. The gate only lets the
+    workflow advance toward the research team once this analyst has produced a
+    non-empty report; because analysts run serially, reaching the last gate
+    with a report guarantees every selected analyst finished.
+
+    Returns:
+    - ``agent_node`` to re-run this analyst if it cleared with an empty report
+      and has not yet exhausted its re-run budget;
+    - ``research_entry`` (when ``is_last``) or ``next_node`` (otherwise)
+      when the report is present or the re-run budget is exhausted
+      (force-continue, so a never-productive model can't loop forever).
+    """
+    report_present = bool((state.get(report_key) or "").strip())
+    if report_present:
+        return research_entry if is_last else next_node
+
+    reruns = state.get("analyst_reruns", {}) or {}
+    if reruns.get(agent_key, 0) > max_reruns:
+        # Exhausted re-run budget: force-continue rather than loop forever.
+        return research_entry if is_last else next_node
+
+    return agent_node
+
+
+def bump_analyst_rerun(state, *, agent_key: str, report_key: str) -> dict[str, int]:
+    """Increment an analyst's re-run counter when it cleared with no report.
+
+    Called from the gate node before the router decides, so the router can
+    bound how many times a report-less analyst is re-run.
+    """
+    if (state.get(report_key) or "").strip():
+        return state.get("analyst_reruns", {}) or {}
+    reruns = dict(state.get("analyst_reruns", {}) or {})
+    reruns[agent_key] = reruns.get(agent_key, 0) + 1
+    return reruns
+
+
 def _trailing_empty_rounds(messages) -> int:
     """Count consecutive trailing assistant messages that carry no text.
 

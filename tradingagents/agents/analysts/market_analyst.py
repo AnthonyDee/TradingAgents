@@ -1,16 +1,18 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    analyst_tool_loop_stuck,
     extract_text_content,
     get_indicators,
     get_instrument_context_from_state,
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
+    invoke_no_tools_fallback,
 )
 
 
-def create_market_analyst(llm, mcp_tools=None):
+def create_market_analyst(llm, mcp_tools=None, max_side_retries=3):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
@@ -92,6 +94,17 @@ Before writing the final report, call get_verified_market_snapshot for this tick
         # report already produced and, if the loop ends truncated, leave the
         # report empty so it drops out of the final report (#1094).
         text = extract_text_content(result).strip()
+
+        # If the model is stuck in an empty tool loop (it has had tools but
+        # never writes prose, e.g. `get_indicators`/`get_realtime_quote`
+        # returning no data), synthesize a report once without tool-binding so
+        # this analyst's section always appears.
+        if not text and not (state.get("market_report") or "").strip() and analyst_tool_loop_stuck(
+            state["messages"], max_side_retries
+        ):
+            result = invoke_no_tools_fallback(prompt, llm, state["messages"])
+            text = extract_text_content(result).strip()
+
         ordered_report = text if text else state.get("market_report", "")
 
         return {

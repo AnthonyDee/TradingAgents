@@ -89,6 +89,29 @@ class _StubLLM(Runnable):
         return self._reply
 
 
+class _FallbackStubLLM(Runnable):
+    """A stub whose tool-bound path returns empty but whose bare path returns text.
+
+    Simulates a model stuck in an empty tool loop (bind_tools rounds all emit
+    tool calls with no prose) that can still be coaxed into writing a report
+    when invoked WITHOUT tools. Used to verify the no-tools fallback fires and
+    guarantees a non-empty market_report at the retry boundary.
+    """
+
+    def __init__(self, fallback_text):
+        self._fallback_text = fallback_text
+
+    def bind_tools(self, tools):
+        return RunnableLambda(
+            lambda *_args, **_kwargs: AIMessage(
+                content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "t"}]
+            )
+        )
+
+    def invoke(self, *args, **kwargs):
+        return AIMessage(content=self._fallback_text)
+
+
 class MarketAnalystReportPropagationTests(unittest.TestCase):
     def test_report_kept_when_final_message_has_tool_call(self):
         # Mimic a thinking provider: report text AND a tool_call on the same
@@ -126,6 +149,28 @@ class MarketAnalystReportPropagationTests(unittest.TestCase):
         node = create_market_analyst(_StubLLM(reply))
         out = node(state)
         self.assertEqual(out["market_report"], "Existing detailed market analysis.")
+
+    def test_no_tools_fallback_fires_at_retry_boundary(self):
+        # The model is stuck: every tool-bound round returns empty. Once the
+        # trailing-empty count reaches the retry boundary (budget-1), the node
+        # must synthesize a report with a no-tools invocation so market_report
+        # is never silently dropped (#1094).
+        from langchain_core.messages import ToolMessage
+
+        state = _minimal_state()
+        # Two prior empty tool rounds (trailing_empty == 2, which is
+        # max_side_retries(3) - 1) => the fallback should fire.
+        state["messages"] = [
+            AIMessage(content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "1"}]),
+            ToolMessage(content="{}", tool_call_id="1"),
+            AIMessage(content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "2"}]),
+            ToolMessage(content="{}", tool_call_id="2"),
+        ]
+        node = create_market_analyst(_FallbackStubLLM("Fallback market analysis."))
+        out = node(state)
+        self.assertEqual(out["market_report"], "Fallback market analysis.")
+        self.assertIn("market_report", out)
+        self.assertTrue(out["messages"])
 
 
 class ConditionalLogicStopTests(unittest.TestCase):

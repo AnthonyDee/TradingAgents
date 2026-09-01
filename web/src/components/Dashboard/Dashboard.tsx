@@ -17,14 +17,17 @@ interface DashboardProps {
   runId: string
   onNew: () => void
   onViewReport: (id: string) => void
+  setView: (view: 'wizard' | 'dashboard' | 'report' | 'history') => void
+  setRunId: (runId: string | null) => void
 }
 
-export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
+export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: DashboardProps) {
   const { completed, error, runId: storeRunId } = useAnalysisStore()
   const { connected } = useAnalysisWS(runId)
   const notifiedRef = useRef(false)
   const [logExpanded, setLogExpanded] = useState(false)
   const [ticker, setTicker] = useState<string>('')
+  const [isRunning, setIsRunning] = useState(true)
 
   useEffect(() => {
     let active = true
@@ -61,6 +64,35 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
     onNew()
   }
 
+  const handleEndRun = () => {
+    // Reset the analysis store
+    useAnalysisStore.getState().reset()
+    // Navigate back to wizard view
+    setView('wizard')
+    // Clear the runId (triggers component unmount and WS cleanup)
+    setRunId(null)
+    // Stop the timer
+    setIsRunning(false)
+  }
+
+  const { startTime } = useAnalysisStore()
+  const [elapsedTime, setElapsedTime] = useState<string>('')
+
+  useEffect(() => {
+    if (!startTime || !isRunning) return
+    const start = new Date(startTime).getTime()
+    const updateTime = () => {
+      const now = new Date().getTime()
+      const diff = now - start
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000)
+      setElapsedTime(`${minutes}m ${seconds}s`)
+    }
+    updateTime()
+    const timer = setInterval(updateTime, 1000)
+    return () => clearInterval(timer)
+  }, [startTime, isRunning])
+
   if (error) {
     return (
       <div className="flex h-full flex-col">
@@ -92,7 +124,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
         <div className="p-4 border-b bg-green-50 dark:bg-green-900/20">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-600" />
               <div>
                 <h1 className="text-xl font-semibold text-green-700 dark:text-green-400">Analysis Complete</h1>
                 <p className="text-sm text-muted-foreground">
@@ -151,6 +183,13 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
           Live analysis of {ticker ? <span className="font-mono text-primary">{ticker}</span> : ''}
         </h1>
         <div className="flex items-center gap-2">
+          {isRunning ? (
+            <Button onClick={handleEndRun} variant="destructive" size="sm">
+              End Analysis
+            </Button>
+          ) : (
+            <div className="text-sm text-muted-foreground">{elapsedTime}</div>
+          )}
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />
           <span className="text-sm text-muted-foreground">
             {connected ? 'Connected' : 'Connecting...'}

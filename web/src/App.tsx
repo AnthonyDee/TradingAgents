@@ -67,7 +67,7 @@ function App() {
             element={
               <>
                 {view === 'wizard' && <Wizard onStart={handleStartAnalysis} />}
-                {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} onViewReport={handleViewReport} />}
+                {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} onViewReport={handleViewReport} setView={setView} setRunId={setRunId} />}
                 {view === 'report' && runId && <ReportView runId={runId} onBack={handleNewAnalysis} />}
                 {view === 'history' && <History onViewReport={handleViewReport} onNew={handleNewAnalysis} />}
               </>
