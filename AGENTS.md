@@ -88,3 +88,32 @@ Optional: configure `mcp_servers.robinhood` in `DEFAULT_CONFIG` or via env. When
 - **Decision log**: `~/.tradingagents/memory/trading_memory.md` (appended each run)
 - **Checkpoints**: `~/.tradingagents/cache/checkpoints/<TICKER>.db` — use `--checkpoint` flag or `config["checkpoint_enabled"] = True` to enable resume across crashes
 - Override paths with `TRADINGAGENTS_CACHE_DIR` and `TRADINGAGENTS_MEMORY_LOG_PATH`
+
+## API server (uvicorn) — restart via launchd
+
+The web API server (`api.server:app` on `127.0.0.1:8001`) is **managed by
+launchd** as LaunchAgent `com.tradingagents.api`, not a plain background
+process. After editing `api/` or `tradingagents/` code that the server runs,
+restart it with the authoritative command:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.tradingagents.api
+```
+
+- `-k` kills the running instance first, then restarts it.
+- `gui/$(id -u)` targets the current user's GUI session domain.
+- `RunAtLoad=true` starts it at login; `KeepAlive=true` auto-restarts on crash.
+
+Config lives in `~/Library/LaunchAgents/com.tradingagents.api.plist` (uvicorn
+binary path, port, env vars like `TRADINGAGENTS_DB_PATH`/`TRADINGAGENTS_MLX_URL`).
+
+Do **not** start a second `nohup uvicorn ... &` by hand — it races the
+launchd instance and fails with `[Errno 48] address already in use`.
+
+Verify + logs:
+
+```bash
+launchctl list | grep tradingagents            # shows the live PID
+curl -s -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:8001/docs
+tail -f /opt/homebrew/var/log/tradingagents-api.{out,err}.log
+```
