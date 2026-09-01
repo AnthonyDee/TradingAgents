@@ -148,7 +148,7 @@ export function Dashboard({ runId, onNew, onViewReport }: DashboardProps) {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between p-4 border-b">
         <h1 className="text-xl font-semibold">
-          Live analysis {ticker ? <span className="font-mono text-primary">of {ticker}</span> : ''}
+          Live analysis of {ticker ? <span className="font-mono text-primary">{ticker}</span> : ''}
         </h1>
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />

@@ -15,6 +15,10 @@ export interface WizardState {
   // Step 4: Analysts
   analysts: string[]
 
+  // Step 4: Researchers + risk debators
+  researchers: string[]
+  risk: string[]
+
   // Step 5: Depth
   researchDepth: number
 
@@ -36,6 +40,8 @@ export interface WizardState {
   setAnalysisDate: (date: string) => void
   setOutputLanguage: (lang: string) => void
   setAnalysts: (analysts: string[]) => void
+  setResearchers: (researchers: string[]) => void
+  setRisk: (risk: string[]) => void
   setResearchDepth: (depth: number) => void
   setProvider: (provider: string, url?: string) => void
   setModels: (shallow: string, deep: string) => void
@@ -50,6 +56,8 @@ const defaultState = {
   analysisDate: new Date().toISOString().split('T')[0],
   outputLanguage: 'English',
   analysts: ['market', 'social', 'news', 'fundamentals'],
+  researchers: ['bull', 'bear'],
+  risk: ['aggressive', 'conservative', 'neutral'],
   researchDepth: 1,
   llmProvider: 'openai_compatible',
   backendUrl: 'http://e1.local:8000/v1',
@@ -80,6 +88,10 @@ export const useWizardStore = create<WizardState>()(
 
       setAnalysts: (analysts) => set({ analysts }),
 
+      setResearchers: (researchers) => set({ researchers }),
+
+      setRisk: (risk) => set({ risk }),
+
       setResearchDepth: (depth) => set({ researchDepth: depth }),
 
       setProvider: (provider, url) => set({
@@ -100,6 +112,8 @@ export const useWizardStore = create<WizardState>()(
           analysis_date: state.analysisDate,
           output_language: state.outputLanguage,
           analysts: state.analysts,
+          researchers: state.researchers,
+          risk: state.risk,
           research_depth: state.researchDepth,
           llm_provider: state.llmProvider,
           backend_url: state.backendUrl,
@@ -118,6 +132,8 @@ export const useWizardStore = create<WizardState>()(
         analysisDate: state.analysisDate,
         outputLanguage: state.outputLanguage,
         analysts: state.analysts,
+        researchers: state.researchers,
+        risk: state.risk,
         researchDepth: state.researchDepth,
         llmProvider: state.llmProvider,
         backendUrl: state.backendUrl,

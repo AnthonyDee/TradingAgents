@@ -16,8 +16,8 @@ from api.service import enqueue_analysis, RunConfig, analysis_queue
 from api.schemas import (
     ConfigSchema, RunCreateResponse, RunStatusResponse, RunDetailResponse,
     HistoryResponse, ModelListResponse, HealthResponse,
-    ProviderInfo, AnalystOption, DepthOption, LanguageOption,
-    ProviderReasoningConfig, ModelOption
+    ProviderInfo, AnalystOption, ResearcherOption, RiskOption, DepthOption, LanguageOption,
+    ProviderReasoningConfig, ModelOption, VALID_RESEARCHERS, VALID_RISK
 )
 from api.websocket import manager
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -98,6 +98,23 @@ def get_analysts_schema() -> List[AnalystOption]:
     ]
 
 
+def get_researchers_schema() -> List[ResearcherOption]:
+    """Get researcher options schema."""
+    return [
+        ResearcherOption(key="bull", label="Bull Researcher"),
+        ResearcherOption(key="bear", label="Bear Researcher"),
+    ]
+
+
+def get_risk_schema() -> List[RiskOption]:
+    """Get risk debator options schema."""
+    return [
+        RiskOption(key="aggressive", label="Aggressive Analyst"),
+        RiskOption(key="conservative", label="Conservative Analyst"),
+        RiskOption(key="neutral", label="Neutral Analyst"),
+    ]
+
+
 def get_depths_schema() -> List[DepthOption]:
     """Get research depth options."""
     return [
@@ -167,6 +184,8 @@ async def config_schema():
     return ConfigSchema(
         providers=get_providers_schema(),
         analysts=get_analysts_schema(),
+        researchers=get_researchers_schema(),
+        risk=get_risk_schema(),
         depths=get_depths_schema(),
         languages=get_languages_schema(),
         reasoning_configs=get_reasoning_configs_schema(),
@@ -224,9 +243,18 @@ async def list_models(provider: str = Query(...), url: Optional[str] = Query(Non
 @app.post("/api/v1/analyze", response_model=RunCreateResponse)
 async def start_analysis(config: RunConfig):
     """Start a new analysis run."""
-    # Validate at least one analyst selected
+    # Validate at least one analyst AND at least one researcher selected,
+    # matching the CLI's combined agents-team constraint (#risk debators may be 0).
     if not config.analysts:
         raise HTTPException(400, "At least one analyst must be selected")
+    if not config.researchers:
+        raise HTTPException(400, "At least one researcher must be selected")
+    invalid_researchers = [r for r in config.researchers if r not in VALID_RESEARCHERS]
+    if invalid_researchers:
+        raise HTTPException(400, f"Invalid researchers: {invalid_researchers}")
+    invalid_risk = [r for r in config.risk if r not in VALID_RISK]
+    if invalid_risk:
+        raise HTTPException(400, f"Invalid risk debators: {invalid_risk}")
 
     # Validate ticker
     ticker = config.ticker.strip().upper()

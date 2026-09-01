@@ -23,6 +23,16 @@ class AnalystOption(BaseModel):
     asset_types: List[str] = ["stock", "crypto"]
 
 
+class ResearcherOption(BaseModel):
+    key: str
+    label: str
+
+
+class RiskOption(BaseModel):
+    key: str
+    label: str
+
+
 class DepthOption(BaseModel):
     label: str
     value: int
@@ -42,9 +52,16 @@ class ProviderReasoningConfig(BaseModel):
 class ConfigSchema(BaseModel):
     providers: List[ProviderInfo]
     analysts: List[AnalystOption]
+    researchers: List[ResearcherOption]
+    risk: List[RiskOption]
     depths: List[DepthOption]
     languages: List[LanguageOption]
     reasoning_configs: List[ProviderReasoningConfig]
+
+
+# Allowed researcher / risk-debator values (mirrors cli.models enums).
+VALID_RESEARCHERS = ["bull", "bear"]
+VALID_RISK = ["aggressive", "conservative", "neutral"]
 
 
 class RunConfig(BaseModel):
@@ -52,6 +69,8 @@ class RunConfig(BaseModel):
     analysis_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     output_language: str = "English"
     analysts: List[str] = Field(..., min_length=1)
+    researchers: List[str] = Field(default_factory=lambda: list(VALID_RESEARCHERS))
+    risk: List[str] = Field(default_factory=lambda: list(VALID_RISK))
     research_depth: int = Field(..., ge=1, le=10)
     llm_provider: str
     backend_url: Optional[str] = None

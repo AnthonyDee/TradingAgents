@@ -17,7 +17,7 @@ const steps = [
   { id: 1, title: 'Ticker', component: Step1Ticker },
   { id: 2, title: 'Date', component: Step2Date },
   { id: 3, title: 'Language', component: Step3Language },
-  { id: 4, title: 'Analysts', component: Step4Analysts },
+  { id: 4, title: 'Agents Team', component: Step4Analysts },
   { id: 5, title: 'Depth', component: Step5Depth },
   { id: 6, title: 'Provider', component: Step6Provider },
   { id: 7, title: 'Models', component: Step7Models },

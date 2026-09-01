@@ -185,6 +185,8 @@ class AnalysisService:
 
             self.graph = TradingAgentsGraph(
                 selected_analysts=analyst_keys,
+                selected_researchers=self.config.researchers,
+                selected_risk=self.config.risk,
                 config=run_cfg,
                 debug=True,
                 callbacks=[self.stats_handler],
