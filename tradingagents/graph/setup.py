@@ -63,7 +63,10 @@ class GraphSetup:
         self.realtime_quote_tools = realtime_quote_tools or []
 
     def setup_graph(
-        self, selected_analysts=("market", "social", "news", "fundamentals")
+        self,
+        selected_analysts=("market", "social", "news", "fundamentals"),
+        selected_researchers: list | None = None,
+        selected_risk: list | None = None,
     ):
         """Set up and compile the agent workflow graph.
 
@@ -73,6 +76,10 @@ class GraphSetup:
                 - "social": Social media analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
+            selected_researchers: List of ResearcherType to include, e.g. ["bull"] or ["bull","bear"].
+                Defaults to ("bull", "bear") when None.
+            selected_risk: List of RiskAnalystType to include, e.g. ["aggressive","conservative","neutral"].
+                Defaults to all three when None.
         """
         plan = build_analyst_execution_plan(selected_analysts)
 
@@ -89,17 +96,42 @@ class GraphSetup:
             ),
         }
 
-        # Create researcher and manager nodes
-        bull_researcher_node = create_bull_researcher(self.deep_thinking_llm)
-        bear_researcher_node = create_bear_researcher(self.deep_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
+        # ---- Researcher nodes ----
+        # Determine which researchers are enabled; default both when None
+        if selected_researchers is None:
+            selected_researchers = ["bull", "bear"]
+        enabled_researchers = set(selected_researchers)
 
-        # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        if "bull" in enabled_researchers:
+            bull_researcher_node = create_bull_researcher(self.deep_thinking_llm)
+        else:
+            bull_researcher_node = None
+
+        if "bear" in enabled_researchers:
+            bear_researcher_node = create_bear_researcher(self.deep_thinking_llm)
+        else:
+            bear_researcher_node = None
+
+        # ---- Risk debator nodes ----
+        if selected_risk is None:
+            selected_risk = ["aggressive", "conservative", "neutral"]
+        enabled_risk = set(selected_risk)
+
+        aggressive_analyst = (
+            create_aggressive_debator(self.quick_thinking_llm)
+            if "aggressive" in enabled_risk
+            else None
+        )
+        neutral_analyst = (
+            create_neutral_debator(self.quick_thinking_llm)
+            if "neutral" in enabled_risk
+            else None
+        )
+        conservative_analyst = (
+            create_conservative_debator(self.quick_thinking_llm)
+            if "conservative" in enabled_risk
+            else None
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)
@@ -110,17 +142,27 @@ class GraphSetup:
             workflow.add_node(spec.clear_node, create_msg_delete())
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
-        # Add other nodes
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
+        # Add researcher nodes conditionally (only add if enabled)
+        if bull_researcher_node is not None:
+            workflow.add_node("Bull Researcher", bull_researcher_node)
+        if bear_researcher_node is not None:
+            workflow.add_node("Bear Researcher", bear_researcher_node)
 
-        # Define edges
+        # Add risk debator nodes conditionally
+        if aggressive_analyst is not None:
+            workflow.add_node("Aggressive Analyst", aggressive_analyst)
+        if conservative_analyst is not None:
+            workflow.add_node("Conservative Analyst", conservative_analyst)
+        if neutral_analyst is not None:
+            workflow.add_node("Neutral Analyst", neutral_analyst)
+
+        # Add other always-on nodes
+        workflow.add_node("Research Manager", create_research_manager(self.deep_thinking_llm))
+        workflow.add_node("Trader", create_trader(self.quick_thinking_llm))
+        workflow.add_node("Portfolio Manager", create_portfolio_manager(self.deep_thinking_llm))
+
+        # ---- Define edges ----
+
         # Start with the first analyst
         workflow.add_edge(START, plan.specs[0].agent_node)
 
@@ -138,28 +180,96 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
+            # Connect to next analyst or to the research team junction
             if i < len(plan.specs) - 1:
                 workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                # Last analyst's clear node → junction to research team
+                # If bull enabled → Bull Researcher; else if bear enabled → Bear Researcher;
+                # else (no researcher enabled) → skip debate → Research Manager directly.
+                if "bull" in enabled_researchers:
+                    workflow.add_edge(current_clear, "Bull Researcher")
+                elif "bear" in enabled_researchers:
+                    workflow.add_edge(current_clear, "Bear Researcher")
+                else:
+                    # No researcher enabled → route straight to Research Manager
+                    workflow.add_edge(current_clear, "Research Manager")
 
-        # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
+        # ---- Debate routing: Bull / Bear researchers ----
+        # Build path maps that include only the enabled researchers + the terminal.
+        if "bull" in enabled_researchers and "bear" in enabled_researchers:
+            # Both enabled: full two-agent debate path map
+            debate_path_map = {
+                "Bull Researcher": "Bull Researcher",
+                "Bear Researcher": "Bear Researcher",
+                "Research Manager": "Research Manager",
+            }
+        elif "bull" in enabled_researchers:
+            # Only Bull: after Bull, always route to Research Manager
+            debate_path_map = {
+                "Bull Researcher": "Research Manager",
+                "Research Manager": "Research Manager",
+            }
+        elif "bear" in enabled_researchers:
+            # Only Bear: entry routes to Bear; after Bear → Research Manager
+            debate_path_map = {
+                "Bear Researcher": "Research Manager",
+                "Research Manager": "Research Manager",
+            }
+        else:
+            # No researcher enabled → should not reach here (entry goes to Research Manager already)
+            debate_path_map = {
+                "Research Manager": "Research Manager",
+            }
+
+        # Both research-debate edges share the per-configuration path map (#1088).
         for debate_node in ("Bull Researcher", "Bear Researcher"):
-            workflow.add_conditional_edges(
-                debate_node,
-                self.conditional_logic.should_continue_debate,
-                DEBATE_PATH_MAP,
-            )
+            if debate_node in workflow.nodes:
+                workflow.add_conditional_edges(
+                    debate_node,
+                    self.conditional_logic.should_continue_debate,
+                    debate_path_map,
+                )
+
+        # ---- Research Manager → Trader → Risk → PM ----
         workflow.add_edge("Research Manager", "Trader")
-        workflow.add_edge("Trader", "Aggressive Analyst")
-        # All three risk edges share the complete RISK_ANALYSIS_PATH_MAP (#1088).
+
+        # ---- Risk debator edges ----
+        # Build a path map over the enabled risk debators only, keyed by the
+        # title-case node names the router returns and mapped to the next
+        # enabled debator in cycle order (or the Portfolio Manager). Only the
+        # enabled debator nodes exist in the graph, so the map must reference
+        # nothing else — LangGraph validates every target eagerly (#1088).
+        risk_node_names = {
+            "aggressive": "Aggressive Analyst",
+            "conservative": "Conservative Analyst",
+            "neutral": "Neutral Analyst",
+        }
+        risk_path_map: dict[str, str] = {}
+        for key in ("aggressive", "conservative", "neutral"):
+            if key not in enabled_risk:
+                continue
+            # Next enabled debator in circular order
+            nxt = None
+            for i in range(1, 4):
+                nxt_key = ("aggressive", "conservative", "neutral")[
+                    (("aggressive", "conservative", "neutral").index(key) + i) % 3
+                ]
+                if nxt_key in enabled_risk:
+                    nxt = risk_node_names[nxt_key]
+                    break
+            risk_path_map[risk_node_names[key]] = nxt or "Portfolio Manager"
+        # The router's terminal return always maps to the (always-present) PM.
+        risk_path_map["Portfolio Manager"] = "Portfolio Manager"
+
+        # Add conditional edges for each enabled risk debator
         for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
-            workflow.add_conditional_edges(
-                risk_node,
-                self.conditional_logic.should_continue_risk_analysis,
-                RISK_ANALYSIS_PATH_MAP,
-            )
+            if risk_node in workflow.nodes:
+                workflow.add_conditional_edges(
+                    risk_node,
+                    self.conditional_logic.should_continue_risk_analysis,
+                    risk_path_map,
+                )
 
         workflow.add_edge("Portfolio Manager", END)
 

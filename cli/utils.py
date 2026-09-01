@@ -5,7 +5,7 @@ import questionary
 from dotenv import find_dotenv, set_key
 from rich.console import Console
 
-from cli.models import AnalystType, AssetType
+from cli.models import AnalystType, ResearcherType, RiskAnalystType, AssetType
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.model_catalog import get_model_options
 
@@ -132,21 +132,53 @@ def get_analysis_date() -> str:
     return date.strip()
 
 
-def select_analysts(asset_type: AssetType = AssetType.STOCK) -> list[AnalystType]:
-    """Select analysts using an interactive checkbox."""
+def select_analysts(asset_type: AssetType = AssetType.STOCK) -> dict:
+    """Select analysts + researchers + risk debators using an interactive combined checkbox.
+
+    Returns a dict with three keys:
+      - "analysts": list of AnalystType selected
+      - "researchers": list of ResearcherType selected (BULL / BEAR)
+      - "risk": list of RiskAnalystType selected (AGGRESSIVE / CONSERVATIVE / NEUTRAL)
+
+    Validation: at least one analyst AND at least one researcher must be selected.
+    Risk can be empty; Trader is always-on.
+    """
+    # Crypto filters out the fundamentals analyst (existing behaviour)
     available_analysts = filter_analysts_for_asset_type(
         [value for _, value in ANALYST_ORDER],
         asset_type,
     )
+
+    # Choices: namespaced values so we can split by category after selection
+    # Format: (display_name, category_prefix + value)
+    # category_prefix: "analyst:", "researcher:", "risk:"
+    all_choices = []
+    for display, value in ANALYST_ORDER:
+        if value in available_analysts:
+            all_choices.append((display, f"analyst:{value.value}"))
+    for display, value in [
+        ("Bull Researcher", "researcher:bull"),
+        ("Bear Researcher", "researcher:bear"),
+    ]:
+        all_choices.append((display, value))
+    for display, value in [
+        ("Aggressive Analyst", "risk:aggressive"),
+        ("Conservative Analyst", "risk:conservative"),
+        ("Neutral Analyst", "risk:neutral"),
+    ]:
+        all_choices.append((display, value))
+
     choices = questionary.checkbox(
-        "Select Your [Analysts Team]:",
+        "Select Your [Agents Team]:",
         choices=[
-            questionary.Choice(display, value=value)
-            for display, value in ANALYST_ORDER
-            if value in available_analysts
+            questionary.Choice(display, value=value) for display, value in all_choices
         ],
-        instruction="\n- Press Space to select/unselect analysts\n- Press 'a' to select/unselect all\n- Press Enter when done",
-        validate=lambda x: len(x) > 0 or "You must select at least one analyst.",
+        instruction=(
+            "\n- Press Space to select/unselect agents\n"
+            "- Press 'a' to select/unselect all\n"
+            "- Press Enter when done\n"
+            "- At least 1 analyst and 1 researcher must be selected"
+        ),
         style=questionary.Style(
             [
                 ("checkbox-selected", "fg:green"),
@@ -155,13 +187,74 @@ def select_analysts(asset_type: AssetType = AssetType.STOCK) -> list[AnalystType
                 ("pointer", "noinherit"),
             ]
         ),
+        validate=lambda x: (
+            any(v.startswith("analyst:") for v in x)
+            and any(v.startswith("researcher:") for v in x)
+        ) or "You must select at least one analyst AND at least one researcher.",
     ).ask()
 
     if not choices:
-        console.print("\n[red]No analysts selected. Exiting...[/red]")
+        console.print("\n[red]No agents selected. Exiting...[/red]")
         exit(1)
 
-    return choices
+    # Parse selections back into categories
+    selected_analysts = [
+        AnalystType(v.split(":", 1)[1])
+        for v in choices
+        if v.startswith("analyst:")
+    ]
+    selected_researchers = [
+        ResearcherType(v.split(":", 1)[1])
+        for v in choices
+        if v.startswith("researcher:")
+    ]
+    selected_risk = [
+        RiskAnalystType(v.split(":", 1)[1])
+        for v in choices
+        if v.startswith("risk:")
+    ]
+
+    return {
+        "analysts": selected_analysts,
+        "researchers": selected_researchers,
+        "risk": selected_risk,
+    }
+
+
+def select_research_depth() -> int:
+    """Select research depth using an interactive selection.
+
+    Note: This function is no longer called from the CLI path since
+    analyst/researcher/risk selection now replaces the old "depth"
+    step. Kept for backward-compatible programme entry.
+    """
+    # Define research depth options with their corresponding values
+    DEPTH_OPTIONS = [
+        ("Shallow - Quick research, few debate and strategy discussion rounds", 1),
+        ("Medium - Middle ground, moderate debate rounds and strategy discussion", 3),
+        ("Deep - Comprehensive research, in depth debate and strategy discussion", 5),
+    ]
+
+    choice = questionary.select(
+        "Select Your [Research Depth]:",
+        choices=[
+            questionary.Choice(display, value=value) for display, value in DEPTH_OPTIONS
+        ],
+        instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
+        style=questionary.Style(
+            [
+                ("selected", "fg:yellow noinherit"),
+                ("highlighted", "fg:yellow noinherit"),
+                ("pointer", "fg:yellow noinherit"),
+            ]
+        ),
+    ).ask()
+
+    if choice is None:
+        console.print("\n[red]No research depth selected. Exiting...[/red]")
+        exit(1)
+
+    return choice
 
 
 def select_research_depth() -> int:

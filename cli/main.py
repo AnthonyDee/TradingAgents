@@ -641,15 +641,24 @@ def get_user_selections():
         )
         output_language = ask_output_language()
 
-    # Step 4: Select analysts
+    # Step 4: Select analysts + researchers + risk debators (combined checkbox)
     console.print(
         create_question_box(
             "Step 4: Analysts Team", "Select your LLM analyst agents for the analysis"
         )
     )
-    selected_analysts = select_analysts(asset_type)
+    agent_selections = select_analysts(asset_type)
+    selected_analysts = agent_selections["analysts"]
+    selected_researchers = agent_selections["researchers"]
+    selected_risk = agent_selections["risk"]
     console.print(
         f"[green]Selected analysts:[/green] {', '.join(analyst.value for analyst in selected_analysts)}"
+    )
+    console.print(
+        f"[green]Selected researchers:[/green] {', '.join(r.value for r in selected_researchers)}"
+    )
+    console.print(
+        f"[green]Selected risk team:[/green] {', '.join(r.value for r in selected_risk) if selected_risk else 'none'}"
     )
 
     # Step 5: Research depth (skipped when both round counts are set via env).
@@ -678,9 +687,9 @@ def get_user_selections():
     # The backend URL comes from TRADINGAGENTS_LLM_BACKEND_URL when set,
     # otherwise the provider's default endpoint — the same value the menu
     # would have picked.
+    selected_llm_provider = DEFAULT_CONFIG["llm_provider"].lower()
     provider_from_env = bool(os.environ.get("TRADINGAGENTS_LLM_PROVIDER"))
     if provider_from_env:
-        selected_llm_provider = DEFAULT_CONFIG["llm_provider"].lower()
         backend_url = resolve_backend_url(
             selected_llm_provider, env_url=DEFAULT_CONFIG["backend_url"]
         )
@@ -783,6 +792,8 @@ def get_user_selections():
         "asset_type": asset_type.value,
         "analysis_date": analysis_date,
         "analysts": selected_analysts,
+        "researchers": selected_researchers,
+        "risk": selected_risk,
         "research_depth": selected_research_depth,
         "llm_provider": selected_llm_provider.lower(),
         "backend_url": backend_url,
@@ -912,13 +923,27 @@ def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
     - Analysts with reports = completed
     - First analyst without report = in_progress
     - Remaining analysts without reports = pending
-    - When all analysts done, set Bull Researcher to in_progress
+    - When all analysts done, set Bull/Bear Researcher to in_progress
     """
     selected = message_buffer.selected_analysts
     found_active = False
 
     if wall_time_tracker is not None:
         sync_analyst_tracker_from_chunk(wall_time_tracker, chunk)
+
+    ANALYST_ORDER = ["market", "social", "news", "fundamentals"]
+    ANALYST_AGENT_NAMES = {
+        "market": "Market Analyst",
+        "social": "Sentiment Analyst",
+        "news": "News Analyst",
+        "fundamentals": "Fundamentals Analyst",
+    }
+    ANALYST_REPORT_MAP = {
+        "market": "market_report",
+        "social": "sentiment_report",
+        "news": "news_report",
+        "fundamentals": "fundamentals_report",
+    }
 
     for analyst_key in ANALYST_ORDER:
         if analyst_key not in selected:
@@ -942,13 +967,40 @@ def update_analyst_statuses(message_buffer, chunk, wall_time_tracker=None):
         else:
             message_buffer.update_agent_status(agent_name, "pending")
 
-    # When all analysts complete, transition research team to in_progress
-    if (
-        not found_active
-        and selected
-        and message_buffer.agent_status.get("Bull Researcher") == "pending"
-    ):
-        message_buffer.update_agent_status("Bull Researcher", "in_progress")
+    # Set Researcher statuses if they are enabled
+    enabled_researchers = getattr(message_buffer, "selected_researchers", None)
+    if enabled_researchers:
+        for researcher_key in ["bull", "bear"]:
+            if researcher_key not in enabled_researchers:
+                continue
+            agent_name = f"{researcher_key.capitalize()} Researcher"
+            # Check if this researcher has started (debate history has content)
+            debate_state = chunk.get("investment_debate_state", {})
+            has_activity = bool(
+                debate_state.get("bull_history", "").strip()
+                if researcher_key == "bull"
+                else debate_state.get("bear_history", "").strip()
+            )
+            if has_activity:
+                message_buffer.update_agent_status(agent_name, "in_progress")
+
+    # Set Risk debator statuses if they are enabled
+    enabled_risk = getattr(message_buffer, "selected_risk", None)
+    if enabled_risk:
+        risk_names = ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]
+        risk_keys = ["aggressive", "conservative", "neutral"]
+        for i, risk_key in enumerate(risk_keys):
+            if risk_key not in enabled_risk:
+                continue
+            agent_name = risk_names[i]
+            risk_state = chunk.get("risk_debate_state", {})
+            has_activity = bool(
+                risk_state.get(f"{risk_key}_history", "").strip()
+            )
+            if has_activity:
+                message_buffer.update_agent_status(agent_name, "in_progress")
+
+    return
 
 def extract_content_string(content):
     """Extract string content from various message formats.
@@ -1067,18 +1119,22 @@ def run_analysis(checkpoint: bool | None = None):
     # Normalize analyst selection to predefined order (selection is a 'set', order is fixed)
     selected_set = {analyst.value for analyst in selections["analysts"]}
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
+    selected_researchers = [r.value for r in selections["researchers"]]
+    selected_risk = [r.value for r in selections["risk"]] if selections["risk"] else []
     analyst_execution_plan = build_analyst_execution_plan(selected_analyst_keys)
     analyst_wall_time_tracker = AnalystWallTimeTracker(analyst_execution_plan)
 
     # Initialize the graph with callbacks bound to LLMs
     graph = TradingAgentsGraph(
         selected_analyst_keys,
+        selected_researchers=selected_researchers,
+        selected_risk=selected_risk,
         config=config,
         debug=True,
         callbacks=[stats_handler],
     )
 
-    # Initialize message buffer with selected analysts
+    # Initialize message buffer with selected analysts + researchers + risk
     message_buffer.init_for_analysis(selected_analyst_keys)
 
     # Track start time for elapsed display

@@ -36,6 +36,8 @@ class ConditionalLogic:
         max_debate_rounds=1,
         max_risk_discuss_rounds=1,
         max_side_retries=3,
+        selected_researchers: list | None = None,
+        selected_risk: list | None = None,
     ):
         """Initialize with configuration parameters.
 
@@ -46,6 +48,9 @@ class ConditionalLogic:
         self.max_debate_rounds = max_debate_rounds
         self.max_risk_discuss_rounds = max_risk_discuss_rounds
         self.max_side_retries = max_side_retries
+        # Store enabled sets; default to full sets when None
+        self.selected_researchers = selected_researchers or ["bull", "bear"]
+        self.selected_risk = selected_risk or ["aggressive", "conservative", "neutral"]
 
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue.
@@ -103,46 +108,96 @@ class ConditionalLogic:
     def should_continue_debate(self, state: AgentState) -> str:
         """Determine if debate should continue.
 
-        The Research Manager only completes once BOTH the bull and bear have
-        produced substantive arguments. A side whose message came back empty is
-        retried (bounded by ``max_side_retries``), so the judge never settles on
-        "no debate evidence". After the retry budget is exhausted the debate is
-        forced to the Research Manager, which renders an explicit note when it
-        has no evidence to weight.
+        Returns the next node in the debate, respecting which researchers
+        are enabled. Budget = len(enabled_researchers) * max_debate_rounds
+        + max_side_retries. An early exit forces Research Manager when both
+        sides have produced content and count >= 2 * max_debate_rounds.
+        The returned value is a node name (e.g. "Bull Researcher") that
+        must exist in the graph's path map.
         """
-        debate = state["investment_debate_state"]
-        count = debate["count"]
-        current = debate.get("current_response", "")
 
-        budget = 2 * self.max_debate_rounds + self.max_side_retries
+        enabled = self.selected_researchers  # e.g. ["bull"], ["bear"], ["bull","bear"]
+        count = state["investment_debate_state"]["count"]
+        current_response = state["investment_debate_state"].get("current_response", "")
+
+        bull_empty = not (state["investment_debate_state"].get("bull_history", "") or "").strip()
+        bear_empty = not (state["investment_debate_state"].get("bear_history", "") or "").strip()
+
+        budget = len(enabled) * self.max_debate_rounds + self.max_side_retries
+
         if count >= budget:
             return "Research Manager"
 
-        bull_empty = not (debate.get("bull_history") or "").strip()
-        bear_empty = not (debate.get("bear_history") or "").strip()
-
+        # Early exit: if both sides have produced content and count has hit
+        # the phase limit (2 * max_debate_rounds), force Research Manager.
         if count >= 2 * self.max_debate_rounds and not bull_empty and not bear_empty:
             return "Research Manager"
 
-        # Keep debating / retrying until each side has produced content.
-        if current.startswith("Bull"):
-            if bear_empty:
+        # Determine the next speaker based on who spoke last and who is enabled.
+        # Preserve original behavior: if current_response starts with "Bull",
+        # next is "Bear Researcher" (and vice versa), unless the counterpart
+        # is disabled, in which case route to Research Manager.
+        if current_response.startswith("Bull"):
+            if "bear" in enabled:
                 return "Bear Researcher"
-            return "Bull Researcher"
-
-        if bear_empty and not bull_empty:
-            return "Bear Researcher"
-
-        return "Bull Researcher"
+            # Only bull enabled → route to manager after this response
+            return "Research Manager"
+        if current_response.startswith("Bear"):
+            if "bull" in enabled:
+                return "Bull Researcher"
+            # Only bear enabled → route to manager after this response
+            return "Research Manager"
+        # When current_response is empty (first turn), start with the first enabled researcher in list order, mapped to the proper node name.
+        if enabled:
+            first = enabled[0]  # e.g. "bull" or "bear"
+            return f"{first.capitalize()} Researcher"
+        return "Research Manager"
 
     def should_continue_risk_analysis(self, state: AgentState) -> str:
-        """Determine if risk analysis should continue."""
-        if (
-            state["risk_debate_state"]["count"] >= 3 * self.max_risk_discuss_rounds
-        ):  # 3 rounds of back-and-forth between 3 agents
+        """Determine if risk analysis should continue.
+
+        Returns the next enabled risk debator in the cycle, or the
+        Portfolio Manager when the count limit is reached.
+        Count limit = len(enabled_risk) * max_risk_discuss_rounds.
+        """
+        enabled = self.selected_risk  # e.g. ["aggressive"], ["conservative","neutral"], all three
+        count = state["risk_debate_state"]["count"]
+        limit = len(enabled) * self.max_risk_discuss_rounds
+
+        if count >= limit:
             return "Portfolio Manager"
-        if state["risk_debate_state"]["latest_speaker"].startswith("Aggressive"):
-            return "Conservative Analyst"
-        if state["risk_debate_state"]["latest_speaker"].startswith("Conservative"):
-            return "Neutral Analyst"
-        return "Aggressive Analyst"
+
+        latest_speaker = state["risk_debate_state"].get("latest_speaker", "")
+        risk_list = ["aggressive", "conservative", "neutral"]
+
+        # Determine the next node in the cycle, skipping disabled agents
+        if latest_speaker.startswith("Aggressive"):
+            # Next should be Conservative, but skip if disabled
+            if "conservative" in enabled:
+                return "Conservative Analyst"
+            # If Conservative disabled, skip to Neutral (if enabled)
+            if "neutral" in enabled:
+                return "Neutral Analyst"
+            # If neither Conservative nor Neutral enabled, go to PM
+            return "Portfolio Manager"
+        elif latest_speaker.startswith("Conservative"):
+            # Next should be Neutral, but skip if disabled
+            if "neutral" in enabled:
+                return "Neutral Analyst"
+            # If Neutral disabled, skip to Aggressive (if enabled)
+            if "aggressive" in enabled:
+                return "Aggressive Analyst"
+            return "Portfolio Manager"
+        elif latest_speaker.startswith("Neutral"):
+            # Next should be Aggressive (circular), but skip if disabled
+            if "aggressive" in enabled:
+                return "Aggressive Analyst"
+            # If Aggressive disabled, skip to Conservative (if enabled)
+            if "conservative" in enabled:
+                return "Conservative Analyst"
+            return "Portfolio Manager"
+        # First turn (latest_speaker empty): start with first enabled in cycle order
+        for node in risk_list:
+            if node in enabled:
+                return f"{node.capitalize()} Analyst"
+        return "Portfolio Manager"

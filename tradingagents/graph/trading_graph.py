@@ -68,6 +68,8 @@ class TradingAgentsGraph:
     def __init__(
         self,
         selected_analysts=("market", "social", "news", "fundamentals"),
+        selected_researchers: list | None = None,
+        selected_risk: list | None = None,
         debug=False,
         config: dict[str, Any] = None,
         callbacks: list | None = None,
@@ -76,6 +78,10 @@ class TradingAgentsGraph:
 
         Args:
             selected_analysts: List of analyst types to include
+            selected_researchers: List of ResearcherType to include (BULL, BEAR).
+                Defaults to ("bull", "bear") when None.
+            selected_risk: List of RiskAnalystType to include (AGGRESSIVE, CONSERVATIVE, NEUTRAL).
+                Defaults to all three when None.
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
@@ -135,6 +141,8 @@ class TradingAgentsGraph:
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config["max_debate_rounds"],
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
+            selected_researchers=selected_researchers,
+            selected_risk=selected_risk,
         )
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
@@ -157,6 +165,8 @@ class TradingAgentsGraph:
 
         # Graph-shape-affecting run choices, kept for the checkpoint signature.
         self.selected_analysts = tuple(selected_analysts)
+        self.selected_researchers = selected_researchers or ("bull", "bear")
+        self.selected_risk = selected_risk or ("aggressive", "conservative", "neutral")
 
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
@@ -380,11 +390,15 @@ class TradingAgentsGraph:
         selection, debate/risk depth, or asset mode starts fresh instead of
         silently continuing the previous graph (#1089).
         """
+        sel_res = ",".join(self.selected_researchers)
+        sel_risk = ",".join(self.selected_risk)
         return "|".join([
             "analysts=" + ",".join(self.selected_analysts),
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
+            f"researchers={sel_res}",
+            f"risk_sel={sel_risk}",
         ])
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
