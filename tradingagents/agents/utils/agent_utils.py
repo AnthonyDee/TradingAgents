@@ -44,9 +44,52 @@ __all__ = [
     "get_instrument_context_from_state",
     "get_language_instruction",
     "create_msg_delete",
+    "extract_text_content",
+    "has_text_content",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def extract_text_content(message: Any) -> str:
+    """Return the text content of a message as a single string.
+
+    Works whether ``message.content`` is a plain string (OpenAI-style final
+    text) or a list of content blocks (Anthropic-style, e.g.
+    ``[{"type": "text", "text": "..."}, ...]``). Text blocks are concatenated;
+    non-text blocks (tool_use, images) are ignored. Returns ``""`` when there
+    is no textual content — such as a pure tool-calling leg with no prose.
+
+    Unlike reading ``message.content`` directly, this intentionally does not
+    gate on ``message.tool_calls``: many thinking/reasoning providers return a
+    final assistant message that carries report text *and* a recorded
+    ``tool_calls`` entry, and the report should be kept in that case.
+    """
+    content = message.content
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)
+
+
+def has_text_content(message: Any) -> bool:
+    """Return True when ``message`` carries non-empty textual content.
+
+    Used to decide loop termination: a final assistant message that contains
+    real prose is the report, even if it also lists ``tool_calls``. This stops
+    the analyst loop from re-invoking tools (or hitting the recursion limit)
+    once the model has already delivered its write-up.
+    """
+    return bool(extract_text_content(message).strip())
 
 
 def get_language_instruction() -> str:
@@ -59,6 +102,7 @@ def get_language_instruction() -> str:
     report rather than a mix of languages.
     """
     from tradingagents.dataflows.config import get_config
+
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
@@ -212,6 +256,3 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
-
-

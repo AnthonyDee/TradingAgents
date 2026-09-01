@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    extract_text_content,
     get_balance_sheet,
     get_cashflow,
     get_fundamentals,
@@ -61,14 +62,14 @@ def create_fundamentals_analyst(llm, mcp_tools=None):
 
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        # Only overwrite the report with a non-empty write-up (see the market
+        # analyst for the empty-round clobbering rationale, #1094).
+        text = extract_text_content(result).strip()
+        ordered_report = text if text else state.get("fundamentals_report", "")
 
         return {
             "messages": [result],
-            "fundamentals_report": report,
+            "fundamentals_report": ordered_report,
         }
 
     return fundamentals_analyst_node

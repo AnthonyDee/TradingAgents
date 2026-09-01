@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    extract_text_content,
     get_global_news,
     get_instrument_context_from_state,
     get_language_instruction,
@@ -61,14 +62,14 @@ def create_news_analyst(llm, mcp_tools=None):
         chain = prompt | llm.bind_tools(tools)
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        # Only overwrite the report with a non-empty write-up (see the market
+        # analyst for the empty-round clobbering rationale, #1094).
+        text = extract_text_content(result).strip()
+        ordered_report = text if text else state.get("news_report", "")
 
         return {
             "messages": [result],
-            "news_report": report,
+            "news_report": ordered_report,
         }
 
     return news_analyst_node

@@ -1,7 +1,8 @@
 location of install: (removed. monitor on next install)
 /Users/e/miniforge3/envs/tradingagents/lib/python3.12/site-packages/cli
 
-sudo sysctl iogpu.wired_limit_mb=43008 (42 current - max no other apps)
+sudo sysctl iogpu.wired_limit_mb=43008 
+(42 current - max no other apps)
 [x 1024mb/gb]
 sudo sysctl iogpu.wired_limit_mb=41984 (41)
 sudo sysctl iogpu.wired_limit_mb=40960 (40)
@@ -15,3 +16,4 @@ brew services start nginx
 
 restart api server
 launchctl kickstart -k gui/$(id -u)/com.tradingagents.api && sleep 2 && launchctl list | grep tradingagents
+launchctl kickstart -k gui/$(id -u)/com.tradingagents.api

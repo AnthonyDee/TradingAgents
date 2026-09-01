@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    extract_text_content,
     get_instrument_context_from_state,
     get_language_instruction,
 )
@@ -46,13 +47,21 @@ Use this information to deliver a compelling bull argument, refute the bear's co
 
         response = llm.invoke(prompt)
 
-        argument = f"Bull Analyst: {response.content}"
+        text = extract_text_content(response).strip()
+        # Only record a substantive argument. An empty reply leaves the history
+        # blank so the debate router can detect the side produced no content and
+        # retry it instead of letting the Research Manager settle on a hollow
+        # "Bull Analyst: " stub.
+        if text:
+            argument = f"Bull Analyst: {text}"
+            history = history + "\n" + argument
+            bull_history = bull_history + "\n" + argument
 
         new_investment_debate_state = {
-            "history": history + "\n" + argument,
-            "bull_history": bull_history + "\n" + argument,
+            "history": history,
+            "bull_history": bull_history,
             "bear_history": investment_debate_state.get("bear_history", ""),
-            "current_response": argument,
+            "current_response": argument if text else "",
             "count": investment_debate_state["count"] + 1,
         }
 

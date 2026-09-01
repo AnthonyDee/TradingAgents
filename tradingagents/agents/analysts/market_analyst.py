@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    extract_text_content,
     get_indicators,
     get_instrument_context_from_state,
     get_language_instruction,
@@ -85,14 +86,17 @@ Before writing the final report, call get_verified_market_snapshot for this tick
 
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        # Only overwrite the report with a non-empty write-up. During the tool
+        # loop the model commonly returns empty content alongside tool_calls
+        # (e.g. gpt-oss via vLLM); writing "" on those rounds would clobber any
+        # report already produced and, if the loop ends truncated, leave the
+        # report empty so it drops out of the final report (#1094).
+        text = extract_text_content(result).strip()
+        ordered_report = text if text else state.get("market_report", "")
 
         return {
             "messages": [result],
-            "market_report": report,
+            "market_report": ordered_report,
         }
 
     return market_analyst_node
