@@ -48,6 +48,8 @@ __all__ = [
     "has_text_content",
     "analyst_tool_loop_stuck",
     "invoke_no_tools_fallback",
+    "rescue_tool_output",
+    "has_tool_calls",
 ]
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,21 @@ def has_text_content(message: Any) -> bool:
     return bool(extract_text_content(message).strip())
 
 
+def has_tool_calls(message: Any) -> bool:
+    """Return True when ``message`` carries at least one tool call.
+
+    Works across providers: checks ``AIMessage.tool_calls`` first (OpenAI /
+    xAI style) then falls back to scanning ``content`` blocks for
+    ``type == "tool_use"`` (Anthropic style).
+    """
+    if getattr(message, "tool_calls", None):
+        return True
+    content = getattr(message, "content", None)
+    if isinstance(content, (list, tuple)):
+        return any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
+    return False
+
+
 def _trailing_empty_rounds(messages) -> int:
     """Count consecutive trailing assistant messages that carry no text.
 
@@ -127,6 +144,159 @@ def analyst_tool_loop_stuck(messages, max_side_retries: int) -> bool:
     if max_side_retries is None or max_side_retries <= 0:
         return False
     return _trailing_empty_rounds(messages) >= max_side_retries - 1
+
+
+# Headers that a data tool introduces on its verbatim output. When any of these
+# appears in the model's turn, it is likely echoing tool output rather than
+# writing original analysis.
+_TOOL_OUTPUT_HEADERS = (
+    "Verified market data snapshot",
+    "Stock data for",
+    "technical indicator",
+    "Recent verified closes",
+    "Latest verified OHLCV row",
+)
+
+
+def _is_tool_output_only(text: str) -> bool:
+    """Return True when *text* is a raw tool-data dump with no real analysis.
+
+    Handle two shapes of dump:
+
+    1. Verbatim tool output — recognized by a data-tool header (e.g.
+       "Verified market data snapshot for SPY", "Stock data for ...").
+    2. Generic table/bullet dumps with little-to-no narrative prose.
+
+    A genuine analyst report instead contains narrative paragraphs (sequences
+    of sentences) and interpretive language. The reason this can't be a pure
+    prose-length check is that the verified snapshot carries a long disclaimers
+    footer that reads like prose, so a length heuristic would misclassify the
+    verbatim snapshot as an analysis.
+    """
+    if not text:
+        return False
+
+    lowered = text.lower()
+    for header in _TOOL_OUTPUT_HEADERS:
+        if header.lower() in lowered:
+            # Verbatim tool output present. It's still a *report* only if the
+            # model added substantial original analysis on top; otherwise it's
+            # a dump. Give a genuine write-up that happens to quote a snapshot
+            # field the benefit of the doubt only when it actually reads like
+            # analysis rather than echoing the tables.
+            return not _has_substantial_analysis(text)
+
+    return _table_dominant_dump(text)
+
+
+def _has_substantial_analysis(text: str) -> bool:
+    """True when *text* contains real interpretive/narrative prose.
+
+    Looks for multiple prose sentences with analytic framing (recommendation,
+    interpretation, trend description) that go beyond echoing data. A verbatim
+    dump only has the tool's own deterministic footer sentence, which is not
+    the model's analysis, so it scores low.
+    """
+    # Words/patterns that indicate the model is interpreting rather than
+    # transcribing. These essentially never appear in raw tool output.
+    analytic_markers = (
+        "indicates",
+        "suggests",
+        "signals",
+        "implies",
+        "reflects",
+        "weigh",
+        "recommend",
+        "sugg",
+        "trend",
+        "momentum",
+        "support",
+        "resistance",
+        "overbought",
+        "oversold",
+        "outlook",
+        "bullish",
+        "bearish",
+        "neutral",
+        "breakout",
+        "pullback",
+        "consolidat",
+        "uptrend",
+        "downtrend",
+        "watch",
+    )
+    hits = sum(1 for marker in analytic_markers if marker in text.lower())
+    return hits >= 3
+
+
+def _table_dominant_dump(text: str) -> bool:
+    """Heuristic for generic table/bullet dumps without verbose tool headers."""
+    table_len = 0
+    prose_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("|") or stripped.startswith("---"):
+            continue
+        # Heading, bullet, numbered, or short label line -> structural.
+        if (
+            stripped.startswith("#")
+            or stripped.startswith("*")
+            or stripped.startswith("- ")
+            or stripped.startswith("+")
+            or any(stripped.startswith(f"{n}.") for n in range(0, 10))
+        ):
+            table_len += len(stripped)
+            continue
+        # A line that is a single short label -> structural.
+        if len(stripped.split(" ")) <= 3:
+            table_len += len(stripped)
+            continue
+        prose_lines.append(stripped)
+
+    if not prose_lines:
+        return True
+    prose_len = sum(len(line) for line in prose_lines)
+    return prose_len < table_len
+
+
+def rescue_tool_output(messages) -> str:
+    """Rescue the most useful data-tool output from *messages* as a last resort.
+
+    Scans backwards through the tool messages and returns the newest usable
+    output from a built-in data tool (e.g. ``get_stock_data`` /
+    ``get_indicators`` / ``get_verified_market_snapshot``), skipping error and
+    unavailable sentinels. Returns ``""`` when nothing usable is found.
+    """
+    _ERROR_MARKERS = (
+        "[realtime quote unavailable]",
+        "NO_DATA_AVAILABLE",
+        "DATA_UNAVAILABLE",
+    )
+    # Built-in data tools whose output is substantive enough to stand in as a
+    # last-resort report when the LLM writes nothing.
+    _DATA_TOOLS = {"get_stock_data", "get_indicators", "get_verified_market_snapshot"}
+
+    def _usable_tool_output(msg):
+        content = msg.content if isinstance(msg.content, str) else extract_text_content(msg)
+        content = content.strip()
+        if not content:
+            return None
+        if content.startswith("Error"):
+            return None
+        if any(marker in content for marker in _ERROR_MARKERS):
+            return None
+        return content
+
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "tool":
+            continue
+        if (getattr(msg, "name", "") or "") not in _DATA_TOOLS:
+            continue
+        out = _usable_tool_output(msg)
+        if out is None:
+            continue
+        return out
+    return ""
 
 
 def invoke_no_tools_fallback(prompt, llm, state_messages) -> AIMessage:

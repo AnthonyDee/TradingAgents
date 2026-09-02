@@ -8,6 +8,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
+    has_tool_calls,
     invoke_no_tools_fallback,
 )
 
@@ -88,20 +89,18 @@ Before writing the final report, call get_verified_market_snapshot for this tick
 
         result = chain.invoke(state["messages"])
 
-        # Only overwrite the report with a non-empty write-up. During the tool
-        # loop the model commonly returns empty content alongside tool_calls
-        # (e.g. gpt-oss via vLLM); writing "" on those rounds would clobber any
-        # report already produced and, if the loop ends truncated, leave the
-        # report empty so it drops out of the final report (#1094).
         text = extract_text_content(result).strip()
 
-        # The report is always the model's written analysis of the data the
-        # tools fetched — never a raw error string or a verbatim data table.
-        # When the model clears with no prose (an empty final turn), keep
-        # whatever report already exists so it never degrades into a raw tool
-        # dump. The graph's analyst completion gate re-runs this node when the
-        # report is still empty, so a model that needs more tool rounds to
-        # compose its write-up is retried rather than having its loop cut short.
+        # If the model is stuck in a tool loop (returning tool_calls without
+        # prose for max_side_retries rounds), force a no-tools fallback so the
+        # conditional logic sees text content and terminates the loop cleanly.
+        loop_stuck = analyst_tool_loop_stuck(state["messages"], max_side_retries)
+        if has_tool_calls(result) and loop_stuck:
+            fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
+            fallback_text = extract_text_content(fallback).strip()
+            if fallback_text:
+                result = fallback
+                text = fallback_text
 
         # If the model is stuck in an empty tool loop (it has had tools but
         # never writes prose, e.g. `get_indicators`/`get_realtime_quote`

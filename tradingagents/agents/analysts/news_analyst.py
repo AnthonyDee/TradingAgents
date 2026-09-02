@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
+    _is_tool_output_only,
     analyst_tool_loop_stuck,
     extract_text_content,
     get_global_news,
@@ -10,7 +11,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
     get_verified_market_snapshot,
+    has_tool_calls,
     invoke_no_tools_fallback,
+    rescue_tool_output,
 )
 
 
@@ -64,6 +67,22 @@ def create_news_analyst(llm, mcp_tools=None, max_side_retries=3):
         chain = prompt | llm.bind_tools(tools)
         result = chain.invoke(state["messages"])
 
+        # If the model returned empty content with no tool calls, it failed
+        # to engage with the tools. Re-invoke with an explicit reminder.
+        if not extract_text_content(result).strip() and not has_tool_calls(result):
+            from langchain_core.messages import HumanMessage
+
+            reminder = HumanMessage(
+                content=(
+                    "You have not yet called any tools. You MUST call "
+                    "get_news and get_global_news to fetch relevant news, "
+                    "get_macro_indicators for economic data, and "
+                    "get_verified_market_snapshot for current price data. "
+                    "Do not write a report without fetching data first."
+                )
+            )
+            result = chain.invoke(state["messages"] + [reminder])
+
         # Only overwrite the report with a non-empty write-up. During the tool
         # loop the model commonly returns empty content alongside tool_calls;
         # writing "" on those rounds would clobber any report already produced
@@ -72,15 +91,37 @@ def create_news_analyst(llm, mcp_tools=None, max_side_retries=3):
         # re-runs this node when the report is still empty.
         text = extract_text_content(result).strip()
 
-        # If the model is stuck in an empty tool loop, synthesize a report once
-        # without tool-binding so this section always appears (#1094).
-        if not text and not (state.get("news_report") or "").strip() and analyst_tool_loop_stuck(
-            state["messages"], max_side_retries
-        ):
-            result = invoke_no_tools_fallback(prompt, llm, state["messages"])
-            text = extract_text_content(result).strip()
+        is_dump = bool(text) and _is_tool_output_only(text)
+        loop_stuck = analyst_tool_loop_stuck(state["messages"], max_side_retries)
 
-        ordered_report = text if text else state.get("news_report", "")
+        if text and not is_dump and not has_tool_calls(result):
+            ordered_report = text
+        elif has_tool_calls(result):
+            if loop_stuck:
+                # LLM stuck in tool loop — force fallback to generate report
+                fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
+                ordered_report = extract_text_content(fallback).strip() or rescue_tool_output(
+                    state["messages"]
+                )
+                if extract_text_content(fallback).strip():
+                    result = fallback
+            else:
+                # LLM produced tool calls (possibly with empty text) — let the
+                # graph's tool loop execute them on the next round.
+                ordered_report = ""
+        elif state.get("news_report") or "":
+            ordered_report = state["news_report"]
+        elif loop_stuck:
+            # Exhausted retries — the LLM never wrote prose, so rescue the
+            # most useful fetched tool data as the section.
+            fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
+            ordered_report = extract_text_content(fallback).strip() or rescue_tool_output(
+                state["messages"]
+            )
+            if extract_text_content(fallback).strip():
+                result = fallback
+        else:
+            ordered_report = ""
 
         return {
             "messages": [result],
