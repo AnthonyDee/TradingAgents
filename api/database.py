@@ -1,10 +1,11 @@
 """SQLite database operations for TradingAgents Web API."""
 
-import os
 import json
+import os
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any
+
 import aiosqlite
 
 DB_PATH = os.getenv("TRADINGAGENTS_DB_PATH", "./data/tradingagents.db")
@@ -48,7 +49,7 @@ async def init_db() -> None:
 async def create_run(
     ticker: str,
     analysis_date: str,
-    config: Dict[str, Any]
+    config: dict[str, Any]
 ) -> str:
     """Create a new analysis run record. Returns the run ID."""
     run_id = str(uuid.uuid4())[:8]
@@ -68,10 +69,10 @@ async def create_run(
 async def update_run_status(
     run_id: str,
     status: str,
-    report: Optional[Dict[str, Any]] = None,
-    error: Optional[str] = None,
-    final_state: Optional[Dict[str, Any]] = None,
-    report_path: Optional[str] = None,
+    report: dict[str, Any] | None = None,
+    error: str | None = None,
+    final_state: dict[str, Any] | None = None,
+    report_path: str | None = None,
 ) -> None:
     """Update run status, optionally with final report or error."""
     now = datetime.utcnow().isoformat()
@@ -110,7 +111,7 @@ async def update_run_status(
         await db.commit()
 
 
-async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
+async def get_run(run_id: str) -> dict[str, Any] | None:
     """Get a single run by ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -123,7 +124,7 @@ async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def get_run_report(run_id: str) -> Optional[Dict[str, Any]]:
+async def get_run_report(run_id: str) -> dict[str, Any] | None:
     """Get the final report for a run."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -139,8 +140,8 @@ async def get_run_report(run_id: str) -> Optional[Dict[str, Any]]:
 async def list_runs(
     limit: int = 50,
     offset: int = 0,
-    status: Optional[str] = None
-) -> List[Dict[str, Any]]:
+    status: str | None = None
+) -> list[dict[str, Any]]:
     """List runs with pagination and optional status filter."""
     query = "SELECT id, ticker, analysis_date, status, created_at, completed_at, error_message FROM runs"
     params = []
@@ -157,7 +158,7 @@ async def list_runs(
             return [dict(row) for row in rows]
 
 
-async def count_runs(status: Optional[str] = None) -> int:
+async def count_runs(status: str | None = None) -> int:
     """Count total runs, optionally filtered by status."""
     query = "SELECT COUNT(*) FROM runs"
     params = []
@@ -165,7 +166,6 @@ async def count_runs(status: Optional[str] = None) -> int:
         query += " WHERE status = ?"
         params.append(status)
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(query, params) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+    async with aiosqlite.connect(DB_PATH) as db, db.execute(query, params) as cursor:
+        row = await cursor.fetchone()
+        return row[0] if row else 0

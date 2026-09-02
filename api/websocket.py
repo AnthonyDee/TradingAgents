@@ -1,8 +1,8 @@
 """WebSocket connection manager for real-time analysis updates."""
 
-import asyncio
 import json
-from typing import Dict, List, Set
+from contextlib import suppress
+
 from fastapi import WebSocket
 
 
@@ -10,7 +10,7 @@ class ConnectionManager:
     """Manages WebSocket connections per run_id."""
 
     def __init__(self):
-        self.connections: Dict[str, Set[WebSocket]] = {}
+        self.connections: dict[str, set[WebSocket]] = {}
 
     async def connect(self, run_id: str, websocket: WebSocket) -> None:
         """Accept and register a new WebSocket connection."""
@@ -46,10 +46,8 @@ class ConnectionManager:
         # Close all connections after error
         if run_id in self.connections:
             for ws in list(self.connections[run_id]):
-                try:
+                with suppress(Exception):
                     await ws.close()
-                except Exception:
-                    pass
             del self.connections[run_id]
 
 

@@ -1,30 +1,41 @@
 """FastAPI server for TradingAgents Web UI."""
 
-import os
 import json
+import os
 from contextlib import asynccontextmanager
-from typing import Optional, List
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 
-from api.database import init_db, create_run, get_run, get_run_report, list_runs, count_runs
-from api.service import enqueue_analysis, RunConfig, analysis_queue
+from api.database import count_runs, get_run, init_db, list_runs
 from api.schemas import (
-    ConfigSchema, RunCreateResponse, RunStatusResponse, RunDetailResponse,
-    HistoryResponse, ModelListResponse, HealthResponse,
-    ProviderInfo, AnalystOption, ResearcherOption, RiskOption, DepthOption, LanguageOption,
-    ProviderReasoningConfig, ModelOption, VALID_RESEARCHERS, VALID_RISK
+    VALID_RESEARCHERS,
+    VALID_RISK,
+    AnalystOption,
+    ConfigSchema,
+    DepthOption,
+    HealthResponse,
+    HistoryResponse,
+    LanguageOption,
+    ModelListResponse,
+    ModelOption,
+    ProviderInfo,
+    ProviderReasoningConfig,
+    ResearcherOption,
+    RiskOption,
+    RunCreateResponse,
+    RunDetailResponse,
+    RunStatusResponse,
 )
+from api.service import RunConfig, analysis_queue, enqueue_analysis
 from api.websocket import manager
+from cli.utils import _llm_provider_table
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.reporting import build_epub, _collect_sections
 from tradingagents.llm_clients.model_catalog import get_model_options
-from cli.utils import _llm_provider_table, filter_analysts_for_asset_type
-from cli.models import AnalystType, AssetType
+from tradingagents.reporting import _collect_sections, build_epub
 
 
 # --- Lifespan ---
@@ -57,7 +68,7 @@ app.add_middleware(
 
 # --- Helper functions ---
 
-def get_providers_schema() -> List[ProviderInfo]:
+def get_providers_schema() -> list[ProviderInfo]:
     """Get provider schema for wizard."""
     providers = []
     for label, key, url in _llm_provider_table():
@@ -88,7 +99,7 @@ def get_providers_schema() -> List[ProviderInfo]:
     return providers
 
 
-def get_analysts_schema() -> List[AnalystOption]:
+def get_analysts_schema() -> list[AnalystOption]:
     """Get analyst options schema."""
     return [
         AnalystOption(key="market", label="Market Analyst", asset_types=["stock", "crypto"]),
@@ -98,7 +109,7 @@ def get_analysts_schema() -> List[AnalystOption]:
     ]
 
 
-def get_researchers_schema() -> List[ResearcherOption]:
+def get_researchers_schema() -> list[ResearcherOption]:
     """Get researcher options schema."""
     return [
         ResearcherOption(key="bull", label="Bull Researcher"),
@@ -106,7 +117,7 @@ def get_researchers_schema() -> List[ResearcherOption]:
     ]
 
 
-def get_risk_schema() -> List[RiskOption]:
+def get_risk_schema() -> list[RiskOption]:
     """Get risk debator options schema."""
     return [
         RiskOption(key="aggressive", label="Aggressive Analyst"),
@@ -115,7 +126,7 @@ def get_risk_schema() -> List[RiskOption]:
     ]
 
 
-def get_depths_schema() -> List[DepthOption]:
+def get_depths_schema() -> list[DepthOption]:
     """Get research depth options."""
     return [
         DepthOption(label="Shallow - Quick research", value=1, description="1 debate round, 1 risk round"),
@@ -124,7 +135,7 @@ def get_depths_schema() -> List[DepthOption]:
     ]
 
 
-def get_languages_schema() -> List[LanguageOption]:
+def get_languages_schema() -> list[LanguageOption]:
     """Get output language options."""
     return [
         LanguageOption(label="English", value="English"),
@@ -142,7 +153,7 @@ def get_languages_schema() -> List[LanguageOption]:
     ]
 
 
-def get_reasoning_configs_schema() -> List[ProviderReasoningConfig]:
+def get_reasoning_configs_schema() -> list[ProviderReasoningConfig]:
     """Get provider-specific reasoning configs."""
     return [
         ProviderReasoningConfig(
@@ -171,6 +182,115 @@ def get_reasoning_configs_schema() -> List[ProviderReasoningConfig]:
     ]
 
 
+def get_temperature_schema() -> list[dict[str, Any]]:
+    """Get temperature configuration options."""
+    return [
+        {"label": "Default (provider-specific)", "value": None, "description": "Use provider default"},
+        {"label": "Deterministic (0.0)", "value": 0.0, "description": "Minimal variation, reproducible"},
+        {"label": "Low (0.2)", "value": 0.2, "description": "Focused, slightly varied"},
+        {"label": "Medium (0.5)", "value": 0.5, "description": "Balanced creativity"},
+        {"label": "High (0.8)", "value": 0.8, "description": "More creative, more variation"},
+        {"label": "Very High (1.0)", "value": 1.0, "description": "Maximum variation"},
+    ]
+
+
+def get_max_retries_schema() -> list[dict[str, Any]]:
+    """Get LLM max retries configuration options."""
+    return [
+        {"label": "Default (provider-specific, usually 2)", "value": None, "description": "Use provider/SDK default"},
+        {"label": "No Retries (0)", "value": 0, "description": "Fail fast on errors"},
+        {"label": "Conservative (3)", "value": 3, "description": "Standard retry budget"},
+        {"label": "Aggressive (5)", "value": 5, "description": "Ride out bursty throttling"},
+        {"label": "Very Aggressive (10)", "value": 10, "description": "Maximum resilience for rate-limited deployments"},
+    ]
+
+
+def get_data_vendors_schema() -> list[dict[str, Any]]:
+    """Get data vendor configuration options."""
+    return [
+        {
+            "category": "core_stock_apis",
+            "label": "Core Stock APIs",
+            "description": "Primary source for stock price data",
+            "options": [
+                {"value": "yfinance", "label": "Yahoo Finance (default)", "requires_key": False},
+                {"value": "alpha_vantage", "label": "Alpha Vantage", "requires_key": True},
+            ],
+        },
+        {
+            "category": "technical_indicators",
+            "label": "Technical Indicators",
+            "description": "Source for technical indicator calculations",
+            "options": [
+                {"value": "yfinance", "label": "Yahoo Finance (default)", "requires_key": False},
+                {"value": "alpha_vantage", "label": "Alpha Vantage", "requires_key": True},
+            ],
+        },
+        {
+            "category": "fundamental_data",
+            "label": "Fundamental Data",
+            "description": "Source for financial statements and ratios",
+            "options": [
+                {"value": "yfinance", "label": "Yahoo Finance (default)", "requires_key": False},
+                {"value": "alpha_vantage", "label": "Alpha Vantage", "requires_key": True},
+            ],
+        },
+        {
+            "category": "news_data",
+            "label": "News Data",
+            "description": "Source for news articles",
+            "options": [
+                {"value": "yfinance", "label": "Yahoo Finance (default)", "requires_key": False},
+                {"value": "alpha_vantage", "label": "Alpha Vantage", "requires_key": True},
+            ],
+        },
+        {
+            "category": "macro_data",
+            "label": "Macro Data",
+            "description": "Source for macroeconomic indicators",
+            "options": [
+                {"value": "fred", "label": "FRED (default)", "requires_key": True},
+            ],
+        },
+        {
+            "category": "prediction_markets",
+            "label": "Prediction Markets",
+            "description": "Source for prediction market data",
+            "options": [
+                {"value": "polymarket", "label": "Polymarket (default)", "requires_key": False},
+            ],
+        },
+    ]
+
+
+def get_benchmark_schema() -> dict[str, Any]:
+    """Get benchmark configuration options."""
+    return {
+        "benchmark_ticker": {
+            "label": "Override Benchmark Ticker",
+            "description": "Single ticker to use as benchmark for all alpha calculations (e.g., 'SPY', '^NSEI'). Overrides the suffix map when set.",
+            "type": "string",
+            "placeholder": "e.g., SPY",
+        },
+        "benchmark_map": {
+            "label": "Benchmark Suffix Map",
+            "description": "Maps ticker suffixes to benchmark tickers for automatic alpha calculation. US tickers (no suffix) default to SPY.",
+            "type": "object",
+            "default": DEFAULT_CONFIG.get("benchmark_map", {}),
+        },
+    }
+
+
+def get_mcp_schema() -> dict[str, Any]:
+    """Get MCP server configuration info (read-only)."""
+    mcp_config = DEFAULT_CONFIG.get("mcp_servers", {})
+    return {
+        "configured_servers": list(mcp_config.keys()),
+        "realtime_tool_filter": DEFAULT_CONFIG.get("mcp_realtime_tool_filter", {}),
+        "note": "MCP servers are configured server-side via TRADINGAGENTS_MCP_SERVERS env var or DEFAULT_CONFIG. The web UI shows status only.",
+    }
+
+
 # --- API Routes ---
 
 @app.get("/api/v1/health", response_model=HealthResponse)
@@ -189,11 +309,16 @@ async def config_schema():
         depths=get_depths_schema(),
         languages=get_languages_schema(),
         reasoning_configs=get_reasoning_configs_schema(),
+        temperatures=get_temperature_schema(),
+        max_retries_options=get_max_retries_schema(),
+        data_vendors=get_data_vendors_schema(),
+        benchmark_options=get_benchmark_schema(),
+        mcp_info=get_mcp_schema(),
     )
 
 
 @app.get("/api/v1/models", response_model=ModelListResponse)
-async def list_models(provider: str = Query(...), url: Optional[str] = Query(None)):
+async def list_models(provider: str = Query(...), url: str | None = Query(None)):
     """Get available models for a provider."""
     provider = provider.lower()
 
@@ -268,7 +393,7 @@ async def start_analysis(config: RunConfig):
         if analysis_date > datetime.now().date():
             raise HTTPException(400, "Analysis date cannot be in the future")
     except ValueError:
-        raise HTTPException(400, "Invalid date format (YYYY-MM-DD)")
+        raise HTTPException(400, "Invalid date format (YYYY-MM-DD)") from None
 
     run_id = await enqueue_analysis(config)
     return RunCreateResponse(run_id=run_id)
@@ -358,7 +483,7 @@ async def export_report(run_id: str, format: str = Query("md", pattern="^(md|epu
     )
 
 
-def _run_final_state(run) -> Optional[dict]:
+def _run_final_state(run) -> dict | None:
     """Return the best-available final state for a run.
 
     Prefers the raw per-agent state persisted since the report-export feature
@@ -432,7 +557,7 @@ def _run_final_state(run) -> Optional[dict]:
     return state or None
 
 
-def _build_markdown_export(run, config) -> Optional[bytes]:
+def _build_markdown_export(run, config) -> bytes | None:
     """Return CLI-identical consolidated markdown for a run, or None if empty."""
     # Prefer the persisted complete_report.md, if present on disk.
     report_path = run.get("report_path")
@@ -451,7 +576,7 @@ def _build_markdown_export(run, config) -> Optional[bytes]:
     return None
 
 
-def _build_epub_export(run, config) -> Optional[bytes]:
+def _build_epub_export(run, config) -> bytes | None:
     """Return CLI-identical EPUB bytes for a run, or None if empty."""
     # Prefer the persisted .epub, if present on disk.
     report_path = run.get("report_path")
@@ -474,7 +599,7 @@ def _build_epub_export(run, config) -> Optional[bytes]:
 async def get_history(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None)
+    status: str | None = Query(None)
 ):
     """Get paginated analysis history."""
     runs = await list_runs(limit, offset, status)

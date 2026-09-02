@@ -1,30 +1,31 @@
 """Analysis service - core logic extracted from CLI for web API."""
 
-import os
 import asyncio
-import json
-import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Callable, Awaitable
 from pathlib import Path
+from typing import Any
 
+from api.database import create_run, update_run_status
+from api.schemas import RunConfig
+from api.websocket import (
+    make_agent_status_event,
+    make_complete_event,
+    make_error_event,
+    make_report_section_event,
+    make_stats_event,
+    make_tool_call_event,
+    manager,
+)
+from tradingagents.dataflows.symbol_utils import crypto_base
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.reporting import write_report_tree
-from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
     build_analyst_execution_plan,
     get_initial_analyst_node,
-    sync_analyst_tracker_from_chunk,
 )
-from tradingagents.graph.signal_processing import SignalProcessor
-from tradingagents.dataflows.symbol_utils import normalize_symbol, crypto_base
-from cli.utils import detect_asset_type
-
-from api.database import create_run, update_run_status, get_run
-from api.websocket import manager, make_agent_status_event, make_tool_call_event, make_report_section_event, make_stats_event, make_complete_event, make_error_event
-from api.schemas import RunConfig
-
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.reporting import write_report_tree
 
 # Type for event callback
 EventCallback = Callable[[str, dict], Awaitable[None]]
@@ -37,19 +38,19 @@ class AnalysisService:
         self,
         config: RunConfig,
         run_id: str,
-        event_callback: Optional[EventCallback] = None
+        event_callback: EventCallback | None = None
     ):
         self.config = config
         self.run_id = run_id
         self.event_callback = event_callback
         self.running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
         # Analysis components (initialized in run)
-        self.graph: Optional[TradingAgentsGraph] = None
-        self.stats_handler: Optional[Any] = None
-        self.message_buffer: Optional[Any] = None
-        self.selected_analyst_keys: List[str] = []
+        self.graph: TradingAgentsGraph | None = None
+        self.stats_handler: Any | None = None
+        self.message_buffer: Any | None = None
+        self.selected_analyst_keys: list[str] = []
 
     async def _emit(self, event: dict) -> None:
         """Emit an event via callback and WebSocket manager."""
@@ -57,7 +58,7 @@ class AnalysisService:
             await self.event_callback(self.run_id, event)
         await manager.broadcast(self.run_id, event)
 
-    def _build_run_config(self) -> Dict[str, Any]:
+    def _build_run_config(self) -> dict[str, Any]:
         """Build the internal config dict from RunConfig."""
         cfg = DEFAULT_CONFIG.copy()
         cfg["max_debate_rounds"] = self.config.research_depth
@@ -71,6 +72,26 @@ class AnalysisService:
         cfg["anthropic_effort"] = self.config.anthropic_effort
         cfg["output_language"] = self.config.output_language
         cfg["checkpoint_enabled"] = False
+        # LLM settings
+        if self.config.temperature is not None:
+            cfg["temperature"] = self.config.temperature
+        if self.config.llm_max_retries is not None:
+            cfg["llm_max_retries"] = self.config.llm_max_retries
+        # Data vendor configuration
+        if self.config.data_vendors is not None:
+            cfg["data_vendors"] = self.config.data_vendors
+        if self.config.tool_vendors is not None:
+            cfg["tool_vendors"] = self.config.tool_vendors
+        # Benchmark configuration
+        if self.config.benchmark_ticker is not None:
+            cfg["benchmark_ticker"] = self.config.benchmark_ticker
+        if self.config.benchmark_map is not None:
+            cfg["benchmark_map"] = self.config.benchmark_map
+        # MCP server configuration
+        if self.config.mcp_servers is not None:
+            cfg["mcp_servers"] = self.config.mcp_servers
+        if self.config.mcp_realtime_tool_filter is not None:
+            cfg["mcp_realtime_tool_filter"] = self.config.mcp_realtime_tool_filter
         return cfg
 
     def _normalize_ticker(self, ticker: str) -> str:
@@ -88,7 +109,7 @@ class AnalysisService:
             return "crypto"
         return "stock"
 
-    def _save_report_files(self, final_state: Dict[str, Any], ticker: str) -> Optional[Path]:
+    def _save_report_files(self, final_state: dict[str, Any], ticker: str) -> Path | None:
         """Write CLI-equivalent report files to the same directory the CLI uses.
 
         The CLI's interactive save defaults to
@@ -120,7 +141,7 @@ class AnalysisService:
         return "".join(c for c in name if c.isalnum() or c in "._-") or "ticker"
 
     @staticmethod
-    def _sanitize_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _sanitize_state(state: dict[str, Any] | None) -> dict[str, Any] | None:
         """Return a JSON-serializable copy of a graph state.
 
         The raw state accumulating ``astream`` chunks includes ``messages`` lists
@@ -153,7 +174,7 @@ class AnalysisService:
             out[key] = _convert(value)
         return out
 
-    async def run(self) -> Dict[str, Any]:
+    async def run(self) -> dict[str, Any]:
         """Run the analysis and return final state."""
         self.running = True
         await update_run_status(self.run_id, "running")
@@ -164,9 +185,9 @@ class AnalysisService:
             asset_type = self._detect_asset_type(normalized_ticker)
 
             # Filter analysts for asset type
-            analyst_keys = [a for a in self.config.analysts]
+            analyst_keys = list(self.config.analysts)
             if asset_type == "crypto":
-                analyst_keys = [a for a in analyst_keys if a != "fundamentals"]
+                analyst_keys = list(filter(lambda a: a != "fundamentals", analyst_keys))
 
             self.selected_analyst_keys = analyst_keys
 
@@ -218,7 +239,7 @@ class AnalysisService:
             # Stream the analysis. Streamed chunks are per-node deltas, not full
             # state, so merge them (same as the CLI) to ensure every report field
             # populated across the run is present in the final state.
-            final_state: Dict[str, Any] = {}
+            final_state: dict[str, Any] = {}
             async for chunk in self._stream_analysis(init_agent_state, args, analyst_wall_time_tracker, normalized_ticker, asset_type):
                 final_state.update(chunk)
 
@@ -249,15 +270,13 @@ class AnalysisService:
 
     async def _stream_analysis(
         self,
-        init_state: Dict[str, Any],
-        graph_args: Dict[str, Any],
+        init_state: dict[str, Any],
+        graph_args: dict[str, Any],
         wall_time_tracker: AnalystWallTimeTracker,
         ticker: str,
         asset_type: str
     ):
         """Stream analysis chunks and emit events."""
-        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-        import ast
 
         # Initialize message buffer (reuse CLI logic)
         class MessageBuffer:
@@ -275,7 +294,7 @@ class AnalysisService:
                 "fundamentals": "fundamentals_report",
             }
 
-            def __init__(self, selected_analysts: List[str]):
+            def __init__(self, selected_analysts: list[str]):
                 self.selected_analysts = selected_analysts
                 self.agent_status = {}
                 self.report_sections = {}
@@ -352,7 +371,7 @@ class AnalysisService:
 
             yield chunk
 
-    def _classify_message(self, message) -> tuple[str, Optional[str]]:
+    def _classify_message(self, message) -> tuple[str, str | None]:
         """Classify message type and extract content."""
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -371,7 +390,7 @@ class AnalysisService:
 
         return ("system", content)
 
-    def _extract_content(self, content) -> Optional[str]:
+    def _extract_content(self, content) -> str | None:
         """Extract string content from various formats."""
         if content is None or content == "":
             return None
@@ -394,7 +413,7 @@ class AnalysisService:
             return " ".join(parts) if parts else None
         return str(content).strip() if content else None
 
-    async def _update_analyst_statuses(self, chunk: Dict[str, Any]) -> None:
+    async def _update_analyst_statuses(self, chunk: dict[str, Any]) -> None:
         """Update analyst statuses based on accumulated reports."""
         selected = self.message_buffer.selected_analysts
         found_active = False
@@ -425,12 +444,11 @@ class AnalysisService:
                 self.message_buffer.update_agent_status(agent_name, "pending")
 
         # Transition to research team
-        if not found_active and selected:
-            if self.message_buffer.agent_status.get("Bull Researcher") == "pending":
-                self.message_buffer.update_agent_status("Bull Researcher", "in_progress")
-                await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
+        if not found_active and selected and self.message_buffer.agent_status.get("Bull Researcher") == "pending":
+            self.message_buffer.update_agent_status("Bull Researcher", "in_progress")
+            await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
 
-    async def _handle_analyst_reruns(self, chunk: Dict[str, Any]) -> None:
+    async def _handle_analyst_reruns(self, chunk: dict[str, Any]) -> None:
         """Surface pre-research gate re-runs in the status feed.
 
         The completion gate (setup.py) bumps ``analyst_reruns`` for an analyst
@@ -451,7 +469,7 @@ class AnalysisService:
                 await self._emit(make_agent_status_event(name, "in_progress"))
         self.message_buffer._analyst_reruns_last = dict(reruns)
 
-    async def _handle_report_sections(self, chunk: Dict[str, Any]) -> None:
+    async def _handle_report_sections(self, chunk: dict[str, Any]) -> None:
         """Handle research, trading, and risk report sections."""
         # Research team
         if chunk.get("investment_debate_state"):
@@ -501,7 +519,7 @@ class AnalysisService:
             if risk.get("judge_decision"):
                 await self._emit(make_agent_status_event("Portfolio Manager", "completed"))
 
-    def _build_final_report(self, final_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_final_report(self, final_state: dict[str, Any] | None) -> dict[str, Any]:
         """Build the final compiled report from state."""
         if not final_state:
             return {}
@@ -559,7 +577,7 @@ class AnalysisService:
 async def run_analysis_background(
     config: RunConfig,
     run_id: str,
-    event_callback: Optional[EventCallback] = None
+    event_callback: EventCallback | None = None
 ) -> None:
     """Run analysis in background with event streaming."""
     service = AnalysisService(config, run_id, event_callback)
