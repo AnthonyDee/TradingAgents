@@ -13,7 +13,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_verified_market_snapshot,
     has_tool_calls,
     invoke_no_tools_fallback,
-    rescue_tool_output,
 )
 
 
@@ -101,10 +100,8 @@ def create_fundamentals_analyst(llm, mcp_tools=None, max_side_retries=3):
             if loop_stuck:
                 # LLM stuck in tool loop — force fallback to generate report
                 fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
-                ordered_report = extract_text_content(fallback).strip() or rescue_tool_output(
-                    state["messages"]
-                )
-                if extract_text_content(fallback).strip():
+                ordered_report = extract_text_content(fallback).strip()
+                if ordered_report:
                     result = fallback
             else:
                 # LLM produced tool calls (possibly with empty text) — let the
@@ -113,13 +110,10 @@ def create_fundamentals_analyst(llm, mcp_tools=None, max_side_retries=3):
         elif state.get("fundamentals_report") or "":
             ordered_report = state["fundamentals_report"]
         elif loop_stuck:
-            # Exhausted retries — the LLM never wrote prose, so rescue the
-            # most useful fetched tool data as the section.
+            # Exhausted retries — the LLM never wrote prose, synthesize via fallback
             fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
-            ordered_report = extract_text_content(fallback).strip() or rescue_tool_output(
-                state["messages"]
-            )
-            if extract_text_content(fallback).strip():
+            ordered_report = extract_text_content(fallback).strip()
+            if ordered_report:
                 result = fallback
         else:
             ordered_report = ""

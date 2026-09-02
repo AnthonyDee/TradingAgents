@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from 'react'
-import { RotateCcw, FileText, BarChart3, CheckCircle2 } from 'lucide-react'
+import { RotateCcw, FileText, CheckCircle2, Sun, Moon } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { AgentGrid } from './AgentGrid'
 import { ActivityLog } from './ActivityLog'
@@ -12,6 +12,7 @@ import { useAnalysisWS } from '@/lib/ws'
 import { api } from '@/lib/api'
 import MarkdownRenderer from '@/lib/markdown'
 import { toast } from '@/hooks/use-toast'
+import { useTheme } from '@/context/ThemeContext'
 
 interface DashboardProps {
   runId: string
@@ -24,6 +25,7 @@ interface DashboardProps {
 export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: DashboardProps) {
   const { completed, error, runId: storeRunId } = useAnalysisStore()
   const { connected } = useAnalysisWS(runId)
+  const { theme, toggleTheme } = useTheme()
   const notifiedRef = useRef(false)
   const [logExpanded, setLogExpanded] = useState(false)
   const [ticker, setTicker] = useState<string>('')
@@ -98,10 +100,20 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between p-4 border-b">
           <h1 className="text-xl font-semibold">Analysis Failed</h1>
-          <Button onClick={handleNewAnalysis} variant="outline">
-            <RotateCcw className="mr-2 h-4 w-4" />
-            New Analysis
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={handleNewAnalysis} variant="outline">
+              <RotateCcw className="mr-2 h-4 w-4" />
+              New Analysis
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            >
+              {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+            </Button>
+          </div>
         </div>
         <div className="flex-1 flex items-center justify-center p-8">
           <div className="max-w-md text-center">
@@ -140,6 +152,14 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
               <Button onClick={handleViewReport}>
                 <FileText className="mr-2 h-4 w-4" />
                 View Full Report
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleTheme}
+                aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+              >
+                {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
               </Button>
             </div>
           </div>
@@ -194,6 +214,15 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
           <span className="text-sm text-muted-foreground">
             {connected ? 'Connected' : 'Connecting...'}
           </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            className="ml-2"
+          >
+            {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+          </Button>
         </div>
       </div>
       <div className="flex-1 flex flex-col overflow-hidden">

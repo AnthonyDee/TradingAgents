@@ -9,6 +9,7 @@ import { Layout } from './components/Layout'
 import { useWizardStore } from './store/wizard'
 import { useAnalysisStore } from './store/analysis'
 import { api } from './lib/api'
+import { ThemeProvider } from './context/ThemeContext'
 
 function App() {
   const [view, setView] = useState<'wizard' | 'dashboard' | 'report' | 'history'>('wizard')
@@ -60,23 +61,25 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Layout>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <>
-                {view === 'wizard' && <Wizard onStart={handleStartAnalysis} />}
-                {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} onViewReport={handleViewReport} setView={setView} setRunId={setRunId} />}
-                {view === 'report' && runId && <ReportView runId={runId} onBack={handleNewAnalysis} />}
-                {view === 'history' && <History onViewReport={handleViewReport} onNew={handleNewAnalysis} />}
-              </>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Layout>
-      <Toaster />
+      <ThemeProvider>
+        <Layout>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <>
+                  {view === 'wizard' && <Wizard onStart={handleStartAnalysis} />}
+                  {view === 'dashboard' && runId && <Dashboard runId={runId} onNew={handleNewAnalysis} onViewReport={handleViewReport} setView={setView} setRunId={setRunId} />}
+                  {view === 'report' && runId && <ReportView runId={runId} onBack={handleNewAnalysis} />}
+                  {view === 'history' && <History onViewReport={handleViewReport} onNew={handleNewAnalysis} />}
+                </>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Layout>
+        <Toaster />
+      </ThemeProvider>
     </BrowserRouter>
   )
 }

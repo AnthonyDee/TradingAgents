@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Download, FileText, BookOpen } from 'lucide-react'
+import { ArrowLeft, Download, FileText, BookOpen, Sun, Moon } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { api } from '@/lib/api'
 import MarkdownRenderer from '@/lib/markdown'
+import { useTheme } from '@/context/ThemeContext'
 
 interface ReportViewProps {
   runId: string
@@ -20,6 +21,7 @@ export function ReportView({ runId, onBack }: ReportViewProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
+  const { theme, toggleTheme } = useTheme()
 
   useEffect(() => {
     const fetchReport = async () => {
@@ -108,6 +110,14 @@ export function ReportView({ runId, onBack }: ReportViewProps) {
           <Button variant="outline" onClick={exportEpub}>
             <BookOpen className="mr-2 h-4 w-4" />
             Export EPUB
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+          >
+            {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
           </Button>
         </div>
       </div>

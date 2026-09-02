@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from 'react'
-import { Check } from 'lucide-react'
+import { Check, Sun, Moon } from 'lucide-react'
 import { Button, Card, CardContent } from '@/components/ui'
 import { useWizardStore } from '@/store/wizard'
 import { Step1Ticker } from './Step1Ticker'
@@ -12,6 +12,7 @@ import { Step5Depth } from './Step5Depth'
 import { Step6Provider } from './Step6Provider'
 import { Step7Models } from './Step7Models'
 import { Step8ProviderConfig } from './Step8ProviderConfig'
+import { useTheme } from '@/context/ThemeContext'
 
 const steps = [
   { id: 1, title: 'Ticker', component: Step1Ticker },
@@ -27,6 +28,7 @@ const steps = [
 export function Wizard({ onStart }: { onStart: (config: any) => void }) {
   const [currentStep, setCurrentStep] = useState(1)
   const { getConfig, reset } = useWizardStore()
+  const { theme, toggleTheme } = useTheme()
 
   const handleNext = () => {
     if (currentStep < steps.length) {
@@ -87,18 +89,28 @@ export function Wizard({ onStart }: { onStart: (config: any) => void }) {
       {/* Main Content */}
       <div className="flex-1 overflow-y-auto p-6 lg:p-8">
         <div className="max-w-2xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold tracking-tight">TradingAgents Analysis</h1>
-            <p className="mt-2 text-muted-foreground">
-              Step {currentStep} of {steps.length}: {currentStepData.title}
-            </p>
-            <div className="mt-4 h-2 bg-muted rounded-full overflow-hidden">
+          <div className="mb-8 flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">TradingAgents Analysis</h1>
+              <p className="mt-2 text-muted-foreground">
+                Step {currentStep} of {steps.length}: {currentStepData.title}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+            >
+              {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+            </Button>
+          </div>
+<div className="mt-4 h-2 bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full bg-primary transition-all duration-300"
                 style={{ width: `${(currentStep / steps.length) * 100}%` }}
               />
             </div>
-          </div>
 
           <Card>
             <CardContent className="p-6">
