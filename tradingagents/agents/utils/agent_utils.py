@@ -155,6 +155,15 @@ _TOOL_OUTPUT_HEADERS = (
     "technical indicator",
     "Recent verified closes",
     "Latest verified OHLCV row",
+    "Company Fundamentals for",
+    "Balance Sheet data for",
+    "Cash Flow data for",
+    "Income Statement data for",
+    "Insider Transactions data for",
+    "News, from",
+    "Global Market News, from",
+    "FRED:",
+    "Polymarket prediction markets:",
 )
 
 
@@ -264,7 +273,10 @@ def rescue_tool_output(messages) -> str:
 
     Scans backwards through the tool messages and returns the newest usable
     output from a built-in data tool (e.g. ``get_stock_data`` /
-    ``get_indicators`` / ``get_verified_market_snapshot``), skipping error and
+    ``get_indicators`` / ``get_verified_market_snapshot`` /
+    ``get_fundamentals`` / ``get_balance_sheet`` / ``get_cashflow`` /
+    ``get_income_statement`` / ``get_news`` / ``get_global_news`` /
+    ``get_macro_indicators`` / ``get_prediction_markets``), skipping error and
     unavailable sentinels. Returns ``""`` when nothing usable is found.
     """
     _ERROR_MARKERS = (
@@ -274,7 +286,19 @@ def rescue_tool_output(messages) -> str:
     )
     # Built-in data tools whose output is substantive enough to stand in as a
     # last-resort report when the LLM writes nothing.
-    _DATA_TOOLS = {"get_stock_data", "get_indicators", "get_verified_market_snapshot"}
+    _DATA_TOOLS = {
+        "get_stock_data",
+        "get_indicators",
+        "get_verified_market_snapshot",
+        "get_fundamentals",
+        "get_balance_sheet",
+        "get_cashflow",
+        "get_income_statement",
+        "get_news",
+        "get_global_news",
+        "get_macro_indicators",
+        "get_prediction_markets",
+    }
 
     def _usable_tool_output(msg):
         content = msg.content if isinstance(msg.content, str) else extract_text_content(msg)
@@ -313,6 +337,10 @@ def invoke_no_tools_fallback(prompt, llm, state_messages) -> AIMessage:
     result = chain.invoke(state_messages)
     fallback_text = extract_text_content(result).strip()
     if not fallback_text:
+        # Try to rescue actual tool data first so verified data isn't lost
+        rescued = rescue_tool_output(state_messages)
+        if rescued:
+            return AIMessage(content=rescued)
         # Last-resort so the section still surfaces in the final report even if
         # the provider returns an empty assistant turn.
         fallback_text = (
