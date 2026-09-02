@@ -33,7 +33,7 @@ def create_fundamentals_analyst(llm, mcp_tools=None, max_side_retries=3):
         system_message = (
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
-            + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_verified_market_snapshot(symbol, curr_date, look_back_days)` for the verified current price and recent OHLCV of the ticker. Before stating the current share price or any price-level/percentage-move claim, call get_verified_market_snapshot and treat its latest row as the source of truth; never guess or infer a price from fundamentals alone. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as the current price). Prefer the live quote for the current-price framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price as of the relevant date. Always call get_verified_market_snapshot as well."
+            + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_verified_market_snapshot(symbol, curr_date, look_back_days)` for the verified current price and recent OHLCV of the ticker. Before stating the current share price or any price-level/percentage-move claim, call get_verified_market_snapshot and treat its latest row as the source of truth; never guess or infer a price from fundamentals alone. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as the current price). Prefer the live quote for the current-price framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price as of the relevant date. Always call get_verified_market_snapshot as well. If the realtime quote call errors or returns '[realtime quote unavailable]', explicitly say the live quote is unavailable and proceed using the verified snapshot as the current price — do not keep retrying the quote call."
             + get_language_instruction(),
         )
 
@@ -64,11 +64,16 @@ def create_fundamentals_analyst(llm, mcp_tools=None, max_side_retries=3):
 
         result = chain.invoke(state["messages"])
 
-        # Only overwrite the report with a non-empty write-up (see the market
-        # analyst for the empty-round clobbering rationale, #1094). If the
-        # model is stuck in an empty tool loop, synthesize a report once
-        # without tool-binding so this section always appears.
+        # Only overwrite the report with a non-empty write-up. During the tool
+        # loop the model commonly returns empty content alongside tool_calls;
+        # writing "" on those rounds would clobber any report already produced
+        # and, if the loop ends truncated, leave the report empty so it drops
+        # out of the final report (#1094). The graph's analyst completion gate
+        # re-runs this node when the report is still empty.
         text = extract_text_content(result).strip()
+
+        # If the model is stuck in an empty tool loop, synthesize a report once
+        # without tool-binding so this section always appears (#1094).
         if not text and not (state.get("fundamentals_report") or "").strip() and analyst_tool_loop_stuck(
             state["messages"], max_side_retries
         ):

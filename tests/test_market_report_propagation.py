@@ -174,8 +174,10 @@ class MarketAnalystReportPropagationTests(unittest.TestCase):
 
     def test_quote_error_does_not_clobber_stock_data(self):
         # A failed get_realtime_quote leaves an error ToolMessage as the most
-        # recent tool result. The rescue path must skip it and fall back to the
-        # earlier get_stock_data output instead of reporting the error string.
+        # recent tool result. When the model clears with no prose, the rescue
+        # path must skip the error and fall back to the earlier get_stock_data
+        # output instead of either reporting the error string or silently
+        # dropping the valid data.
         from langchain_core.messages import ToolMessage
 
         csv_out = (

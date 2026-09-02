@@ -1,8 +1,10 @@
 location of install: (removed. monitor on next install)
 /Users/e/miniforge3/envs/tradingagents/lib/python3.12/site-packages/cli
 
-sudo sysctl iogpu.wired_limit_mb=43008 
+sudo sysctl iogpu.wired_limit_mb=43008
 (42 current - max no other apps)
+sudo sysctl iogpu.wired_limit_mb=43520
+(42.5)
 [x 1024mb/gb]
 sudo sysctl iogpu.wired_limit_mb=41984 (41)
 sudo sysctl iogpu.wired_limit_mb=40960 (40)

@@ -389,6 +389,102 @@ class TestRealtimeQuoteWrapper:
         # The order/execution tool must never be surfaced to analysts.
         assert [t.name for t in tools] == ["get_realtime_quote"]
 
+    def test_prefers_quotes_over_position_tool_listed_first(self, loop):
+        # Regression (#realquote): the Robinhood server lists many "equity"
+        # tools (positions, orders, option quotes). The old name-only sort
+        # could bind the wrapper to get_equity_positions, whose schema has no
+        # `symbols` property — so every call failed server-side with
+        # `unexpected additional properties ["symbols"]` and the analysts'
+        # mandated realtime-quote call degraded to "[realtime quote
+        # unavailable]". Even when the position tool is listed FIRST, the
+        # wrapper must bind to the genuine quotes tool.
+        mgr = MCPClientManager({})
+        mgr._loop = loop
+        mgr._raw_tools = {
+            "get_equity_positions": SimpleNamespace(
+                name="get_equity_positions", description="positions",
+                inputSchema={"type": "object",
+                             "properties": {"account_number": {"type": "string"}},
+                             "required": ["account_number"]}),
+            "get_equity_quotes": SimpleNamespace(
+                name="get_equity_quotes", description="quotes",
+                inputSchema={"type": "object",
+                             "properties": {"symbols": {"type": "array",
+                                                        "items": {"type": "string"}}},
+                             "required": ["symbols"]}),
+        }
+        captured = {}
+
+        class FakeSession:
+            async def call_tool(self, name, arguments):
+                captured["name"] = name
+                captured["args"] = arguments
+                return SimpleNamespace(content=[SimpleNamespace(text="QQQ 707.64")])
+
+        mgr._sessions["robinhood"] = FakeSession()
+        mgr._tool_servers = {"get_equity_positions": "robinhood",
+                             "get_equity_quotes": "robinhood"}
+
+        tool = mgr.build_realtime_quote_tool()
+        assert tool.name == "get_realtime_quote"
+        out = tool.func("QQQ")
+
+        assert captured == {"name": "get_equity_quotes", "args": {"symbols": ["QQQ"]}}
+        assert out == "QQQ 707.64"
+
+    def test_order_tool_listed_first_never_bound(self, loop):
+        # An equity order tool (also "equity"-named, also score-0 under the old
+        # sort) must never be chosen for get_realtime_quote.
+        mgr = MCPClientManager({})
+        mgr._loop = loop
+        mgr._raw_tools = {
+            "get_equity_orders": SimpleNamespace(
+                name="get_equity_orders", description="orders",
+                inputSchema={"type": "object",
+                             "properties": {"account_number": {"type": "string"}},
+                             "required": ["account_number"]}),
+            "get_equity_quotes": SimpleNamespace(
+                name="get_equity_quotes", description="quotes",
+                inputSchema={"type": "object",
+                             "properties": {"symbols": {"type": ["null", "array"]}},
+                             "required": ["symbols"]}),
+        }
+        captured = {}
+
+        class FakeSession:
+            async def call_tool(self, name, arguments):
+                captured["name"] = name
+                captured["args"] = arguments
+                return SimpleNamespace(content=[SimpleNamespace(text="QQQ 707.64")])
+
+        mgr._sessions["robinhood"] = FakeSession()
+        mgr._tool_servers = {"get_equity_orders": "robinhood",
+                             "get_equity_quotes": "robinhood"}
+
+        tool = mgr.build_realtime_quote_tool()
+        assert tool is not None
+        out = tool.func("QQQ")
+
+        assert captured == {"name": "get_equity_quotes", "args": {"symbols": ["QQQ"]}}
+        assert out == "QQQ 707.64"
+
+    def test_index_quote_tool_without_ticker_arg_not_bound(self, loop):
+        # get_index_quotes / get_option_quotes are keyed by instrument ids and
+        # have no symbols/symbol/tickers property; binding the wrapper to them
+        # would send a bogus `symbols` arg that the server rejects. When only
+        # such tools exist, no realtime-quote wrapper is built.
+        mgr = MCPClientManager({})
+        mgr._loop = loop
+        mgr._raw_tools = {
+            "get_index_quotes": SimpleNamespace(
+                name="get_index_quotes", description="index quotes",
+                inputSchema={"type": "object",
+                             "properties": {"instrument_ids": {"type": "array"}},
+                             "required": ["instrument_ids"]}),
+        }
+        assert mgr.build_realtime_quote_tool() is None
+        assert mgr.get_realtime_quote_tools() == []
+
     def test_no_tool_when_none_available(self):
         mgr = MCPClientManager({})
         assert mgr.build_realtime_quote_tool() is None

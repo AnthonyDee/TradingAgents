@@ -56,7 +56,7 @@ Volume-Based Indicators:
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
-        Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as "current"). Prefer the live quote for the "current price" framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price "as of <date>". Always call get_verified_market_snapshot as well."""
+        Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as "current"). Prefer the live quote for the "current price" framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price "as of <date>". Always call get_verified_market_snapshot as well. If the realtime quote call errors or returns "[realtime quote unavailable]", explicitly say the live quote is unavailable and proceed using the verified snapshot as the current price — do not keep retrying the quote call."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )
@@ -95,22 +95,31 @@ Before writing the final report, call get_verified_market_snapshot for this tick
         # report empty so it drops out of the final report (#1094).
         text = extract_text_content(result).strip()
 
+        # The report is always the model's written analysis of the data the
+        # tools fetched — never a raw error string or a verbatim data table.
+        # When the model clears with no prose (an empty final turn), keep
+        # whatever report already exists so it never degrades into a raw tool
+        # dump. The graph's analyst completion gate re-runs this node when the
+        # report is still empty, so a model that needs more tool rounds to
+        # compose its write-up is retried rather than having its loop cut short.
+
         # If the model is stuck in an empty tool loop (it has had tools but
         # never writes prose, e.g. `get_indicators`/`get_realtime_quote`
         # returning no data), synthesize a report once without tool-binding so
-        # this analyst's section always appears.
+        # this analyst's section always appears (#1094).
         if not text and not (state.get("market_report") or "").strip() and analyst_tool_loop_stuck(
             state["messages"], max_side_retries
         ):
             result = invoke_no_tools_fallback(prompt, llm, state["messages"])
             text = extract_text_content(result).strip()
 
-        # If the model never wrote prose, rescue the most useful tool output so
-        # verified data isn't lost. Scan backwards and skip error/unavailable
-        # output — a failed MCP quote returns "[realtime quote unavailable] MCP
-        # error: invalid params: validating \"arguments\": ..." and a data tool
-        # returns a NO_DATA_AVAILABLE sentinel. Using that as the report would
-        # wipe the get_stock_data data fetched earlier.
+        # If the model still never wrote prose, rescue the most useful tool
+        # output so verified data isn't lost. Scan backwards and skip
+        # error/unavailable output — a failed MCP quote returns "[realtime
+        # quote unavailable] MCP error: invalid params: validating
+        # \"arguments\": ..." and a data tool returns a NO_DATA_AVAILABLE
+        # sentinel. Using that as the report would wipe the get_stock_data data
+        # fetched earlier.
         _ERROR_MARKERS = (
             "[realtime quote unavailable]",
             "NO_DATA_AVAILABLE",

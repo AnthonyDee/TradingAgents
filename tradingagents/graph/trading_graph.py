@@ -1,5 +1,6 @@
 # TradingAgents/graph/trading_graph.py
 
+import contextlib
 import json
 import logging
 import os
@@ -210,6 +211,10 @@ class TradingAgentsGraph:
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
+        # Tolerate the unbound-call pattern exercised by tests
+        # (``TradingAgentsGraph._create_tool_nodes(None)``): defer to the class
+        # default (no realtime tools) instead of raising on ``None``.
+        realtime_quote_tools = getattr(self, "realtime_quote_tools", None) or ()
         return {
             "market": ToolNode(
                 [
@@ -223,7 +228,7 @@ class TradingAgentsGraph:
                     get_verified_market_snapshot,
                     # Realtime market-data tools from connected MCP servers
                     # (e.g. Robinhood quotes). Empty when none configured.
-                    *self.realtime_quote_tools,
+                    *realtime_quote_tools,
                 ]
             ),
             "social": ToolNode(
@@ -245,7 +250,7 @@ class TradingAgentsGraph:
                     # is not in the selected analyst set.
                     get_verified_market_snapshot,
                     # Realtime market-data tools from connected MCP servers.
-                    *self.realtime_quote_tools,
+                    *realtime_quote_tools,
                 ]
             ),
             "fundamentals": ToolNode(
@@ -260,7 +265,7 @@ class TradingAgentsGraph:
                     # analyst is not in the selected analyst set.
                     get_verified_market_snapshot,
                     # Realtime market-data tools from connected MCP servers.
-                    *self.realtime_quote_tools,
+                    *realtime_quote_tools,
                 ]
             ),
         }
@@ -443,10 +448,8 @@ class TradingAgentsGraph:
                 self._checkpointer_ctx = None
                 self.graph = self.workflow.compile()
             # Release MCP server subprocesses / sessions after the run.
-            try:
+            with contextlib.suppress(Exception):  # pragma: no cover - best-effort teardown
                 self.mcp_manager.close()
-            except Exception:  # pragma: no cover - best-effort teardown
-                pass
 
     def save_reports(self, final_state, ticker, save_path=None) -> Path:
         """Write the markdown report tree for a completed run, like the CLI does.

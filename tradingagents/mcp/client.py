@@ -624,50 +624,80 @@ class MCPClientManager:
             res = asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=timeout)
         except Exception as exc:  # noqa: BLE001 - surface as text to the agent
             logger.warning("MCP tool call failed: %s", exc)
-            return f"[realtime quote unavailable] MCP error: {exc}"
+            return (
+                "[realtime quote unavailable] MCP tool error: "
+                f"{exc}. The verified market snapshot remains available via "
+                "get_verified_market_snapshot; treat its latest row as the "
+                "current price and continue your analysis without retrying "
+                "this quote."
+            )
         return self._format_call_result(res)
 
     def build_realtime_quote_tool(self) -> StructuredTool | None:
         """Build a normalized ``get_realtime_quote(symbol)`` wrapper tool.
 
-        Picks the best quote/price MCP tool and adapts the single ``symbol``
-        argument to that tool's expected parameters (e.g. a ``symbols`` list).
-        Returns None when no suitable tool is available.
+        Picks the best realtime quote/price MCP tool and adapts the single
+        ``symbol`` argument to that tool's expected parameters (e.g. a
+        ``symbols`` list). Returns None when no suitable tool is available.
+
+        Candidate selection matters: the Robinhood MCP exposes dozens of tools
+        (``get_equity_quotes``, ``get_equity_positions``, ``get_equity_orders``,
+        ``get_option_quotes``, ``get_index_quotes``, ...). A naive "first tool
+        whose name mentions quote/equity" can bind the wrapper to an
+        account/order/position tool whose schema has no ``symbols`` parameter.
+        Calling it then fails server-side with ``invalid params: validating
+        "arguments": unexpected additional properties ["symbols"]``, degrading
+        every realtime quote to "[realtime quote unavailable]" — which stalled
+        the market analyst (its prompt mandates a live quote, so it retried the
+        broken call instead of writing its report). We therefore apply the
+        include/exclude realtime filter, refuse candidates that cannot address
+        a single ticker, and rank a genuine quote tool for the underlying
+        above price-book/bars fallbacks.
         """
         if not self._raw_tools:
             return None
 
-        def _score(name: str) -> int:
-            """Rank a candidate tool so equity/stock quotes win over crypto.
+        include = tuple(
+            (self.filter_config or {}).get("include", DEFAULT_REALTIME_INCLUDE)
+        )
+        exclude = tuple(
+            (self.filter_config or {}).get("exclude", DEFAULT_REALTIME_EXCLUDE)
+        )
 
-            The Robinhood MCP exposes both ``get_equity_quotes`` and
-            ``get_crypto_quotes``. The old first-match-on-"quote" logic could
-            bind to the *crypto* quote tool, which then returned empty results
-            (``{"results":[]}``) for a stock ticker, leaving the analysts
-            looping on a live-quote call that never yields data (see the empty
-            market-report bug). Prefer the equity quote, then generic quotes,
-            then price-style tools.
-            """
+        def _score(name: str, raw) -> int:
+            """Rank a candidate; refuse tools the wrapper must never call."""
             n = name.lower()
-            if "equity" in n or "stock" in n or "instrument" in n:
-                return 0
+            if any(x in n for x in exclude):
+                return 100
+            # No way to address a single ticker (e.g. position/order/option or
+            # index tools keyed by instrument/account ids): the wrapper would
+            # send a ``symbols`` argument the server rejects as unexpected.
+            props = (getattr(raw, "inputSchema", None) or {}).get("properties", {}) or {}
+            if not any(k in props for k in ("symbols", "symbol", "tickers")):
+                return 100
+            if include and not any(x in n for x in include):
+                return 100
+            # Crypto quotes are realtime quotes too, but a stock ticker passed
+            # to one returns empty results; keep them as a last resort only.
             if "crypto" in n or "coin" in n:
-                return 3
+                return 30
             if "quote" in n:
-                return 1
+                # A genuine quote for the underlying wins over generic quotes.
+                return 0 if ("equity" in n or "stock" in n) else 1
             if "price" in n:
                 return 2
+            if "equity" in n or "stock" in n or "market" in n:
+                return 3
             return 4
 
         candidates = list(self._raw_tools.items())
-        candidates.sort(key=lambda kv: _score(kv[0]))
+        candidates.sort(key=lambda kv: _score(kv[0], kv[1]))
         candidate = candidates[0] if candidates else None
         if candidate is None:
             return None
-        # Only bind to something that looks like a quote/price tool; refuse a
-        # completely unrelated first tool (e.g. an order tool) so we never
-        # return a wrapper that silently calls the wrong endpoint.
-        if _score(candidate[0]) > 3:
+        # Only bind a tool that can actually take the ticker; every candidate we
+        # refuse (score >= 100) would fail the call or hit a wrong endpoint.
+        if _score(candidate[0], candidate[1]) >= 100:
             return None
 
         name, raw = candidate
