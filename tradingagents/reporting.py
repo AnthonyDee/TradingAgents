@@ -8,17 +8,18 @@ run produces the same on-disk report tree a CLI run does.
 Added: EPUB version
 """
 
-from datetime import datetime
-from pathlib import Path
-
 import io
 import re
 import time
 import traceback
+from datetime import datetime
+from pathlib import Path
+
 from tradingagents.default_config import DEFAULT_CONFIG
+
 try:
-    from ebooklib import epub
     import markdown
+    from ebooklib import epub
     HAVE_EPUB = True
 except Exception:
     HAVE_EPUB = False
@@ -135,7 +136,7 @@ def _fetch_cover_image(query: str, max_bytes: int = 4 * 1024 * 1024) -> bytes | 
         # retry with backoff and fall through to the next image on failure.
         ua = {"User-Agent": _WIKIMEDIA_UA}
         for attempt in range(3):
-            for mime, _sz, url in ranked[:4]:
+            for _mime, _sz, url in ranked[:4]:
                 try:
                     img = _requests.get(url, headers=ua, timeout=20)
                     if img.status_code == 429:
@@ -175,20 +176,27 @@ def _prepare_markdown_for_epub(md: str) -> str:
     return "\n".join(out)
 
 
-def _collect_sections(final_state: dict) -> list:
+def _collect_sections(final_state: dict, selected_analysts: list[str] | None = None) -> list:
     """Build the ordered per-section markdown content for a run's final state."""
     sections = []
 
     # 1. Analysts
     analyst_parts = []
-    for key, name in [
-        ("market_report", "Market Analyst"),
-        ("sentiment_report", "Sentiment Analyst"),
-        ("news_report", "News Analyst"),
-        ("fundamentals_report", "Fundamentals Analyst"),
-    ]:
-        if key in final_state:
-            analyst_parts.append((name, final_state[key]))
+    analyst_keys = [
+        ("market", "market_report", "Market Analyst"),
+        ("social", "sentiment_report", "Sentiment Analyst"),
+        ("news", "news_report", "News Analyst"),
+        ("fundamentals", "fundamentals_report", "Fundamentals Analyst"),
+    ]
+    for analyst_key, report_key, name in analyst_keys:
+        if selected_analysts is not None and analyst_key not in selected_analysts:
+            # Analyst was not selected for this run, skip entirely
+            continue
+        if report_key in final_state and final_state[report_key]:
+            analyst_parts.append((name, final_state[report_key]))
+        else:
+            # Analyst was selected but did not produce a report
+            analyst_parts.append((name, f"The {name} did not contribute to this report."))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
         sections.append(f"## I. Analyst Reports\n\n{content}")
@@ -402,11 +410,11 @@ def build_epub(final_state: dict, ticker: str, config: dict | None = None, cover
     return buffer.getvalue()
 
 
-def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | None = None) -> Path:
+def write_report_tree(final_state: dict, ticker: str, save_path, config: dict | None = None, selected_analysts: list[str] | None = None) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
-    sections = _collect_sections(final_state)
+    sections = _collect_sections(final_state, selected_analysts)
 
     # 1. Analysts
     analysts_dir = save_path / "1_analysts"

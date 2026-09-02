@@ -55,8 +55,6 @@ from tradingagents.reporting import write_report_tree
 
 # Optional dependencies for EPUB generation
 try:
-    from ebooklib import epub
-    import markdown
     HAVE_EPUB = True
 except Exception:
     HAVE_EPUB = False
@@ -825,9 +823,9 @@ def get_analysis_date():
             )
 
 
-def save_report_to_disk(final_state, ticker: str, save_path: Path, config: dict | None = None):
+def save_report_to_disk(final_state, ticker: str, save_path: Path, config: dict | None = None, selected_analysts: list[str] | None = None):
     """Save the complete analysis report to disk (shared CLI/API writer)."""
-    return write_report_tree(final_state, ticker, save_path, config)
+    return write_report_tree(final_state, ticker, save_path, config, selected_analysts)
 
 
 def display_complete_report(final_state):
@@ -1379,7 +1377,7 @@ def run_analysis(checkpoint: bool | None = None):
         ).strip()
         save_path = Path(save_path_str)
         try:
-            report_file = save_report_to_disk(final_state, selections["ticker"], save_path, config)
+            report_file = save_report_to_disk(final_state, selections["ticker"], save_path, config, selected_analyst_keys)
             console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:

@@ -34,12 +34,7 @@ EventCallback = Callable[[str, dict], Awaitable[None]]
 class AnalysisService:
     """Service for running trading analysis with event streaming."""
 
-    def __init__(
-        self,
-        config: RunConfig,
-        run_id: str,
-        event_callback: EventCallback | None = None
-    ):
+    def __init__(self, config: RunConfig, run_id: str, event_callback: EventCallback | None = None):
         self.config = config
         self.run_id = run_id
         self.event_callback = event_callback
@@ -51,6 +46,10 @@ class AnalysisService:
         self.stats_handler: Any | None = None
         self.message_buffer: Any | None = None
         self.selected_analyst_keys: list[str] = []
+
+        # Logging (CLI-compatible)
+        self._log_file: Path | None = None
+        self._log_dir: Path | None = None
 
     async def _emit(self, event: dict) -> None:
         """Emit an event via callback and WebSocket manager."""
@@ -98,6 +97,7 @@ class AnalysisService:
         """Normalize ticker symbol."""
         try:
             from tradingagents.dataflows.symbol_utils import normalize_symbol
+
             return normalize_symbol(ticker)
         except Exception:
             return ticker.strip().upper()
@@ -122,11 +122,7 @@ class AnalysisService:
         try:
             cfg = self._build_run_config()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            report_dir = (
-                Path.cwd()
-                / "reports"
-                / f"{self._safe_component(ticker)}_{timestamp}"
-            )
+            report_dir = Path.cwd() / "reports" / f"{self._safe_component(ticker)}_{timestamp}"
             report_dir.mkdir(parents=True, exist_ok=True)
             write_report_tree(final_state, ticker, report_dir, cfg)
             return report_dir
@@ -139,6 +135,37 @@ class AnalysisService:
     def _safe_component(name: str) -> str:
         """Sanitize a path component (e.g. a ticker) for use in a filesystem path."""
         return "".join(c for c in name if c.isalnum() or c in "._-") or "ticker"
+
+    def _init_logging(self) -> None:
+        """Initialize CLI-compatible logging to ~/.tradingagents/logs/."""
+        run_cfg = self._build_run_config()
+        results_dir = Path(run_cfg.get("results_dir", DEFAULT_CONFIG["results_dir"]))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_ticker = self._safe_component(self.config.ticker)
+        self._log_dir = results_dir / f"{safe_ticker}_{self.config.analysis_date}_{timestamp}"
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_file = self._log_dir / "message_tool.log"
+        self._log_file.touch(exist_ok=True)
+        self._log_message(
+            "System", f"Analysis started for {self.config.ticker} on {self.config.analysis_date}"
+        )
+
+    def _log_message(self, msg_type: str, content: str) -> None:
+        """Write a message to the log file (CLI format)."""
+        if self._log_file:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            # Replace newlines with spaces like CLI does
+            content = content.replace("\n", " ")
+            with open(self._log_file, "a", encoding="utf-8") as f:
+                f.write(f"{timestamp} [{msg_type}] {content}\n")
+
+    def _log_tool_call(self, tool_name: str, args: dict) -> None:
+        """Write a tool call to the log file (CLI format)."""
+        if self._log_file:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            args_str = ", ".join(f"{k}={v}" for k, v in args.items())
+            with open(self._log_file, "a", encoding="utf-8") as f:
+                f.write(f"{timestamp} [Tool Call] {tool_name}({args_str})\n")
 
     @staticmethod
     def _sanitize_state(state: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -179,6 +206,9 @@ class AnalysisService:
         self.running = True
         await update_run_status(self.run_id, "running")
 
+        # Initialize logging (CLI-compatible)
+        self._init_logging()
+
         try:
             # Normalize ticker and detect asset type
             normalized_ticker = self._normalize_ticker(self.config.ticker)
@@ -200,6 +230,7 @@ class AnalysisService:
 
             # Import stats handler
             from cli.stats_handler import StatsCallbackHandler
+
             self.stats_handler = StatsCallbackHandler()
 
             self.graph = TradingAgentsGraph(
@@ -240,7 +271,9 @@ class AnalysisService:
             # state, so merge them (same as the CLI) to ensure every report field
             # populated across the run is present in the final state.
             final_state: dict[str, Any] = {}
-            async for chunk in self._stream_analysis(init_agent_state, args, analyst_wall_time_tracker, normalized_ticker, asset_type):
+            async for chunk in self._stream_analysis(
+                init_agent_state, args, analyst_wall_time_tracker, normalized_ticker, asset_type
+            ):
                 final_state.update(chunk)
 
             # Build final report
@@ -251,7 +284,8 @@ class AnalysisService:
             report_path = self._save_report_files(final_state, normalized_ticker)
 
             await update_run_status(
-                self.run_id, "completed",
+                self.run_id,
+                "completed",
                 report=final_report,
                 final_state=self._sanitize_state(final_state),
                 report_path=str(report_path) if report_path else None,
@@ -262,6 +296,7 @@ class AnalysisService:
 
         except Exception as e:
             error_msg = f"Analysis failed: {str(e)}"
+            self._log_message("System", f"ERROR: {error_msg}")
             await update_run_status(self.run_id, "failed", error=error_msg)
             await self._emit(make_error_event(error_msg))
             raise
@@ -274,7 +309,7 @@ class AnalysisService:
         graph_args: dict[str, Any],
         wall_time_tracker: AnalystWallTimeTracker,
         ticker: str,
-        asset_type: str
+        asset_type: str,
     ):
         """Stream analysis chunks and emit events."""
 
@@ -341,14 +376,19 @@ class AnalysisService:
                 msg_type, content = self._classify_message(message)
                 if content and content.strip():
                     await self._emit({"type": "message", "msg_type": msg_type, "content": content})
+                    self._log_message(msg_type.capitalize(), content)
 
                 # Emit tool calls
                 if hasattr(message, "tool_calls") and message.tool_calls:
                     for tool_call in message.tool_calls:
                         if isinstance(tool_call, dict):
-                            await self._emit(make_tool_call_event(tool_call["name"], tool_call["args"]))
+                            await self._emit(
+                                make_tool_call_event(tool_call["name"], tool_call["args"])
+                            )
+                            self._log_tool_call(tool_call["name"], tool_call["args"])
                         else:
                             await self._emit(make_tool_call_event(tool_call.name, tool_call.args))
+                            self._log_tool_call(tool_call.name, tool_call.args)
 
             # Update analyst statuses from reports
             await self._update_analyst_statuses(chunk)
@@ -362,12 +402,14 @@ class AnalysisService:
             # Emit stats periodically
             if self.stats_handler:
                 stats = self.stats_handler.get_stats()
-                await self._emit(make_stats_event(
-                    stats.get("llm_calls", 0),
-                    stats.get("tool_calls", 0),
-                    stats.get("tokens_in", 0),
-                    stats.get("tokens_out", 0)
-                ))
+                await self._emit(
+                    make_stats_event(
+                        stats.get("llm_calls", 0),
+                        stats.get("tool_calls", 0),
+                        stats.get("tokens_in", 0),
+                        stats.get("tokens_out", 0),
+                    )
+                )
 
             yield chunk
 
@@ -444,7 +486,11 @@ class AnalysisService:
                 self.message_buffer.update_agent_status(agent_name, "pending")
 
         # Transition to research team
-        if not found_active and selected and self.message_buffer.agent_status.get("Bull Researcher") == "pending":
+        if (
+            not found_active
+            and selected
+            and self.message_buffer.agent_status.get("Bull Researcher") == "pending"
+        ):
             self.message_buffer.update_agent_status("Bull Researcher", "in_progress")
             await self._emit(make_agent_status_event("Bull Researcher", "in_progress"))
 
@@ -575,9 +621,7 @@ class AnalysisService:
 
 
 async def run_analysis_background(
-    config: RunConfig,
-    run_id: str,
-    event_callback: EventCallback | None = None
+    config: RunConfig, run_id: str, event_callback: EventCallback | None = None
 ) -> None:
     """Run analysis in background with event streaming."""
     service = AnalysisService(config, run_id, event_callback)
