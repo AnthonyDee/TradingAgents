@@ -275,7 +275,7 @@ class MessageBuffer:
 
         # Analyst Team Reports - use .get() to handle missing sections
         analyst_sections = ["market_report", "sentiment_report", "news_report", "fundamentals_report"]
-        if any(self.report_sections.get(section) for section in analyst_sections):
+        if any(section in self.report_sections for section in analyst_sections):
             report_parts.append("## Analyst Team Reports")
             if self.report_sections.get("market_report"):
                 report_parts.append(

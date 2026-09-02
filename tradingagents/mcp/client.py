@@ -676,7 +676,16 @@ class MCPClientManager:
 
         def _build_args(symbol: str) -> dict:
             if "symbols" in props:
-                return {"symbols": [symbol] if props["symbols"].get("type") == "array" else symbol}
+                stype = props["symbols"].get("type")
+                # A JSON-schema `type` may be a list of the allowed types, e.g.
+                # ["null","array"] (Robinhood's get_equity_quotes). Normalize
+                # away "null" before deciding list-vs-scalar; otherwise the
+                # wrapper sends `symbols: "HOOD"` (a bare string), which fails
+                # the server's validation with `invalid params: validating
+                # "arguments"` and degrades the quote to "unavailable".
+                if isinstance(stype, list):
+                    stype = next((t for t in stype if t != "null"), None)
+                return {"symbols": [symbol] if stype == "array" else symbol}
             if "symbol" in props:
                 return {"symbol": symbol}
             if "tickers" in props:

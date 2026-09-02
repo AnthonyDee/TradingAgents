@@ -105,7 +105,54 @@ Before writing the final report, call get_verified_market_snapshot for this tick
             result = invoke_no_tools_fallback(prompt, llm, state["messages"])
             text = extract_text_content(result).strip()
 
-        ordered_report = text if text else state.get("market_report", "")
+        # If the model never wrote prose, rescue the most useful tool output so
+        # verified data isn't lost. Scan backwards and skip error/unavailable
+        # output — a failed MCP quote returns "[realtime quote unavailable] MCP
+        # error: invalid params: validating \"arguments\": ..." and a data tool
+        # returns a NO_DATA_AVAILABLE sentinel. Using that as the report would
+        # wipe the get_stock_data data fetched earlier.
+        _ERROR_MARKERS = (
+            "[realtime quote unavailable]",
+            "NO_DATA_AVAILABLE",
+            "DATA_UNAVAILABLE",
+        )
+        # Built-in data tools whose output is substantive enough to stand in as
+        # a fallback report when the LLM writes nothing.
+        _DATA_TOOLS = {"get_stock_data", "get_indicators", "get_verified_market_snapshot"}
+
+        def _usable_tool_output(msg):
+            content = (
+                msg.content
+                if isinstance(msg.content, str)
+                else extract_text_content(msg)
+            )
+            content = content.strip()
+            if not content:
+                return None
+            if content.startswith("Error"):
+                return None
+            if any(marker in content for marker in _ERROR_MARKERS):
+                return None
+            return content
+
+        tool_output = None
+        data_tool_output = None
+        for msg in reversed(state["messages"]):
+            if getattr(msg, "type", None) != "tool":
+                continue
+            out = _usable_tool_output(msg)
+            if out is None:
+                continue
+            if tool_output is None:
+                tool_output = out
+            if data_tool_output is None and (getattr(msg, "name", "") or "") in _DATA_TOOLS:
+                data_tool_output = out
+            if tool_output is not None and data_tool_output is not None:
+                break
+
+        ordered_report = (
+            text or data_tool_output or tool_output or state.get("market_report", "")
+        )
 
         return {
             "messages": [result],

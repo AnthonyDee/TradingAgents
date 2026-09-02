@@ -187,7 +187,7 @@ def _collect_sections(final_state: dict) -> list:
         ("news_report", "News Analyst"),
         ("fundamentals_report", "Fundamentals Analyst"),
     ]:
-        if final_state.get(key):
+        if key in final_state:
             analyst_parts.append((name, final_state[key]))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)

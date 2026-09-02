@@ -335,6 +335,39 @@ class TestRealtimeQuoteWrapper:
         assert captured == {"name": "get_equity_quotes", "args": {"symbols": ["HOOD"]}}
         assert out == "HOOD 716.44"
 
+    def test_wrapper_normalizes_list_type_schema(self, loop):
+        # Robinhood's get_equity_quotes declares `symbols` as
+        # {"type": ["null","array"]} (a list of allowed types). The wrapper must
+        # normalize the list type and send an array — not a bare string — or the
+        # server rejects it with `invalid params: validating "arguments"`.
+        mgr = MCPClientManager({})
+        mgr._loop = loop
+        raw = SimpleNamespace(
+            name="get_equity_quotes", description="q",
+            inputSchema={"type": "object",
+                         "properties": {"symbols": {"type": ["null", "array"],
+                                                    "items": {"type": "string"}}},
+                         "required": ["symbols"]},
+        )
+        mgr._raw_tools["get_equity_quotes"] = raw
+        captured = {}
+
+        class FakeSession:
+            async def call_tool(self, name, arguments):
+                captured["name"] = name
+                captured["args"] = arguments
+                return SimpleNamespace(content=[SimpleNamespace(text="HOOD 716.44")])
+
+        mgr._sessions["robinhood"] = FakeSession()
+        mgr._tool_servers["get_equity_quotes"] = "robinhood"
+
+        tool = mgr.build_realtime_quote_tool()
+        assert tool.name == "get_realtime_quote"
+        out = tool.func("HOOD")
+
+        assert captured == {"name": "get_equity_quotes", "args": {"symbols": ["HOOD"]}}
+        assert out == "HOOD 716.44"
+
     def test_only_quote_tool_surfaced_orders_excluded(self, loop):
         mgr = MCPClientManager({})
         mgr._loop = loop

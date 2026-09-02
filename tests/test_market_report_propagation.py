@@ -172,6 +172,66 @@ class MarketAnalystReportPropagationTests(unittest.TestCase):
         self.assertIn("market_report", out)
         self.assertTrue(out["messages"])
 
+    def test_quote_error_does_not_clobber_stock_data(self):
+        # A failed get_realtime_quote leaves an error ToolMessage as the most
+        # recent tool result. The rescue path must skip it and fall back to the
+        # earlier get_stock_data output instead of reporting the error string.
+        from langchain_core.messages import ToolMessage
+
+        csv_out = (
+            "Date,Open,High,Low,Close,Volume\n"
+            "2026-08-28,230.1,232.5,228.9,231.8,52000000\n"
+            "2026-08-29,232.0,233.9,230.2,233.4,48000000"
+        )
+        reply = AIMessage(
+            content="",
+            tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "2"}],
+        )
+        state = _minimal_state()
+        state["messages"] = [
+            AIMessage(
+                content="Initial read on the tape.",
+                tool_calls=[{"name": "get_stock_data", "args": {}, "id": "1"}],
+            ),
+            ToolMessage(content=csv_out, tool_call_id="1", name="get_stock_data"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "2"}],
+            ),
+            ToolMessage(
+                content='[realtime quote unavailable] MCP error: invalid params: validating "arguments"',
+                tool_call_id="2",
+                name="get_realtime_quote",
+            ),
+        ]
+        node = create_market_analyst(_StubLLM(reply))
+        out = node(state)
+        self.assertEqual(out["market_report"], csv_out)
+        self.assertNotIn("realtime quote unavailable", out["market_report"])
+
+    def test_all_errors_preserve_previous_report(self):
+        # When the ONLY tool round errored (no usable data tool output), never
+        # surface the error string as the report — keep the prior market_report.
+        from langchain_core.messages import ToolMessage
+
+        reply = AIMessage(content="")
+        state = _minimal_state()
+        state["market_report"] = "Existing detailed market analysis."
+        state["messages"] = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "1"}],
+            ),
+            ToolMessage(
+                content='[realtime quote unavailable] MCP error: invalid params: validating "arguments"',
+                tool_call_id="1",
+                name="get_realtime_quote",
+            ),
+        ]
+        node = create_market_analyst(_StubLLM(reply))
+        out = node(state)
+        self.assertEqual(out["market_report"], "Existing detailed market analysis.")
+
 
 class ConditionalLogicStopTests(unittest.TestCase):
     def setUp(self):
