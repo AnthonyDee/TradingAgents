@@ -393,6 +393,11 @@ def build_epub(final_state: dict, ticker: str, config: dict | None = None, cover
     li {
         margin: 0.2em 0;
     }
+    /* TOC styling for analyst entries (2nd top-level li contains nested analyst list) */
+    nav > ol > li:nth-child(2) > ol > li > a {
+        font-size: 1.15em;
+        font-weight: bold;
+    }
     """
     css_item = epub.EpubItem(
         file_name="style.css",

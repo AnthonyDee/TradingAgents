@@ -88,6 +88,12 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
   }, [completed, runId, storeRunId])
 
   useEffect(() => {
+    if (completed && isRunning) {
+      setIsRunning(false)
+    }
+  }, [completed, isRunning])
+
+  useEffect(() => {
     // Reset store for new run
     if (storeRunId !== runId) {
       useAnalysisStore.getState().reset()
@@ -176,7 +182,7 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
               <div>
                 <h1 className="text-xl font-semibold text-green-700 dark:text-green-400">Analysis Complete</h1>
                 <p className="text-sm text-muted-foreground">
-                  All agents finished. Your report is ready to view and export.
+                  All agents finished in {elapsedTime || '0m 0s'}. Your report is ready to view and export.
                 </p>
               </div>
             </div>
@@ -239,9 +245,7 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
           Live analysis of {ticker ? <span className="font-mono text-primary">{ticker}</span> : ''}
         </h1>
         <div className="flex items-center gap-2">
-          {isRunning && (
-            <div className="text-sm text-muted-foreground font-mono">{elapsedTime}</div>
-          )}
+          <div className="text-sm text-muted-foreground font-mono">{elapsedTime || '0m 0s'}</div>
           {isRunning ? (
             <Button onClick={handleEndRun} variant="destructive" size="sm">
               End Analysis
