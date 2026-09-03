@@ -13,6 +13,7 @@ from api.websocket import (
     make_complete_event,
     make_error_event,
     make_report_section_event,
+    make_start_time_event,
     make_stats_event,
     make_tool_call_event,
     manager,
@@ -204,12 +205,17 @@ class AnalysisService:
     async def run(self) -> dict[str, Any]:
         """Run the analysis and return final state."""
         self.running = True
-        await update_run_status(self.run_id, "running")
+        from datetime import datetime
+        start_time_iso = datetime.utcnow().isoformat() + 'Z'
+        await update_run_status(self.run_id, "running", started_at=start_time_iso)
 
         # Initialize logging (CLI-compatible)
         self._init_logging()
 
         try:
+            # Emit start time for frontend timer
+            await self._emit(make_start_time_event(start_time_iso))
+
             # Normalize ticker and detect asset type
             normalized_ticker = self._normalize_ticker(self.config.ticker)
             asset_type = self._detect_asset_type(normalized_ticker)

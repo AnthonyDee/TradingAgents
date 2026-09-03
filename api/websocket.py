@@ -59,6 +59,7 @@ class EventType:
     STATS = "stats"
     COMPLETE = "complete"
     ERROR = "error"
+    START_TIME = "start_time"
 
 
 def make_agent_status_event(agent: str, status: str) -> dict:
@@ -94,6 +95,10 @@ def make_complete_event(run_id: str) -> dict:
 
 def make_error_event(message: str) -> dict:
     return {"type": EventType.ERROR, "message": message}
+
+
+def make_start_time_event(start_time: str) -> dict:
+    return {"type": EventType.START_TIME, "start_time": start_time}
 
 
 # Global connection manager instance

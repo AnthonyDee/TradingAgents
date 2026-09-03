@@ -407,11 +407,15 @@ async def stream_analysis(websocket: WebSocket, run_id: str):
         # Send current status if run exists
         run = await get_run(run_id)
         if run:
-            await websocket.send_json({
+            status_msg = {
                 "type": "status",
                 "status": run["status"],
                 "run_id": run_id
-            })
+            }
+            # Include start_time if analysis is running or completed
+            if run.get("started_at"):
+                status_msg["start_time"] = run["started_at"]
+            await websocket.send_json(status_msg)
         while True:
             # Keep connection alive
             await websocket.receive_text()

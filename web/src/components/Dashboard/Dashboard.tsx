@@ -1,6 +1,22 @@
 "use client"
 
 import { useEffect, useRef, useState } from 'react'
+
+let audioContext: AudioContext | null = null
+
+function getAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+  }
+  return audioContext
+}
+
+function resumeAudioContext() {
+  const ctx = getAudioContext()
+  if (ctx.state === 'suspended') {
+    ctx.resume()
+  }
+}
 import { RotateCcw, FileText, CheckCircle2, Sun, Moon } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { AgentGrid } from './AgentGrid'
@@ -27,6 +43,12 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
   const { connected } = useAnalysisWS(runId)
   const { theme, toggleTheme } = useTheme()
   const notifiedRef = useRef(false)
+
+  useEffect(() => {
+    const events = ['click', 'keydown', 'touchstart', 'mousedown']
+    events.forEach(e => window.addEventListener(e, resumeAudioContext, { once: true }))
+    return () => events.forEach(e => window.removeEventListener(e, resumeAudioContext))
+  }, [])
   const [logExpanded, setLogExpanded] = useState(false)
   const [ticker, setTicker] = useState<string>('')
   const [isRunning, setIsRunning] = useState(true)
@@ -48,6 +70,20 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
         title: 'Analysis complete',
         description: `${runId.slice(0, 8)} finished — report is ready to view and export.`,
       })
+      // Play completion sound using Web Audio API
+      try {
+        const ctx = getAudioContext()
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.type = 'sine'
+        osc.frequency.value = 880
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5)
+        osc.start(ctx.currentTime)
+        osc.stop(ctx.currentTime + 0.5)
+      } catch {}
     }
   }, [completed, runId, storeRunId])
 
@@ -203,12 +239,18 @@ export function Dashboard({ runId, onNew, onViewReport, setView, setRunId }: Das
           Live analysis of {ticker ? <span className="font-mono text-primary">{ticker}</span> : ''}
         </h1>
         <div className="flex items-center gap-2">
+          {isRunning && (
+            <div className="text-sm text-muted-foreground font-mono">{elapsedTime}</div>
+          )}
           {isRunning ? (
             <Button onClick={handleEndRun} variant="destructive" size="sm">
               End Analysis
             </Button>
           ) : (
-            <div className="text-sm text-muted-foreground">{elapsedTime}</div>
+            <Button onClick={handleNewAnalysis} variant="outline" size="sm">
+              <RotateCcw className="mr-2 h-4 w-4" />
+              New Analysis
+            </Button>
           )}
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-yellow-500'}`} />
           <span className="text-sm text-muted-foreground">

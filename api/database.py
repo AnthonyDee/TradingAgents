@@ -23,6 +23,7 @@ async def init_db() -> None:
                 config_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
+                started_at TEXT,
                 completed_at TEXT,
                 report_json TEXT,
                 error_message TEXT,
@@ -37,6 +38,8 @@ async def init_db() -> None:
             await db.execute("ALTER TABLE runs ADD COLUMN final_state_json TEXT")
         if "report_path" not in existing:
             await db.execute("ALTER TABLE runs ADD COLUMN report_path TEXT")
+        if "started_at" not in existing:
+            await db.execute("ALTER TABLE runs ADD COLUMN started_at TEXT")
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC)
         """)
@@ -73,6 +76,7 @@ async def update_run_status(
     error: str | None = None,
     final_state: dict[str, Any] | None = None,
     report_path: str | None = None,
+    started_at: str | None = None,
 ) -> None:
     """Update run status, optionally with final report or error."""
     now = datetime.utcnow().isoformat()
@@ -102,12 +106,20 @@ async def update_run_status(
                 (status, now, error, run_id)
             )
         else:
-            await db.execute(
-                """
-                UPDATE runs SET status = ? WHERE id = ?
-                """,
-                (status, run_id)
-            )
+            if started_at is not None:
+                await db.execute(
+                    """
+                    UPDATE runs SET status = ?, started_at = ? WHERE id = ?
+                    """,
+                    (status, started_at, run_id)
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE runs SET status = ? WHERE id = ?
+                    """,
+                    (status, run_id)
+                )
         await db.commit()
 
 
