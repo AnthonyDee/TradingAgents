@@ -76,6 +76,12 @@ def create_sentiment_analyst(llm):
             ticker, limit=30, start_date=start_date, end_date=end_date
         )
         reddit_block = fetch_reddit_posts(ticker, start_date=start_date, end_date=end_date)
+        social_block = fetch_social_posts(ticker)
+
+        # Verified current-price snapshot, so the sentiment analyst can ground
+        # any price-level or percentage-move claim even when the market
+        # analyst is not in the selected analyst set.
+        price_block = get_verified_market_snapshot.func(ticker, end_date, 30)
 
         system_message = _build_system_message(
             ticker=ticker,

@@ -250,16 +250,36 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # Filter to curr_date to prevent look-ahead bias in backtesting.
     data = data[data["Date"] <= curr_date_dt]
 
-    # Guard the latest in-range bar before dropping incomplete rows: a newest bar
-    # with no close is "not settled yet", not "does not exist". Silently dropping
-    # it would make the previous trading day look like the latest (#1201); raise
-    # instead so the router surfaces it rather than fabricating a fallback.
-    if not data.empty and pd.isna(data["Close"].iloc[-1]):
-        raise NoMarketDataError(
-            symbol, canonical, "latest in-range OHLCV bar has no closing price"
-        )
+    # Guard the latest in-range bar before dropping incomplete rows. A newest bar
+    # with a real price but no close means the session has not settled yet (or is
+    # a glitch) — it carries a price signal (Open/High present) but no final close
+    # we can trust. Rather than fabricate a close or abort the run, degrade
+    # gracefully: drop the unsettled trailing bar and serve the previous settled
+    # one. An entirely un-priced trailing bar (all of OHLC missing — a phantom /
+    # in-progress row yfinance emits today with volume only) is likewise not the
+    # real latest bar and is dropped the same way. Only when *every* in-range bar
+    # is un-priced do we raise, since there is then no usable data at all.
+    #
+    # When the requested day's bar is present but unsettled (dropped here), we
+    # flag it on the returned frame so callers can tell the user the data is one
+    # trading day prior to the current date rather than silently serving
+    # yesterday as if it were today.
+    data_has_unsettled_latest = bool(
+        not data.empty
+        and pd.isna(data["Close"].iloc[-1])
+        and data["Date"].iloc[-1] == curr_date_dt
+    )
+    while not data.empty and pd.isna(data["Close"].iloc[-1]):
+        data = data.iloc[:-1]
+
+    if data.empty:
+        raise NoMarketDataError(symbol, canonical, "no settled OHLCV bar in range")
 
     data = _fill_price_gaps(data)
+
+    if data_has_unsettled_latest and not data.empty:
+        data.attrs["latest_unsettled_date"] = str(curr_date_dt.date())
+        data.attrs["served_latest_date"] = str(data["Date"].iloc[-1].date())
 
     # Reject a stale frame (latest row far older than curr_date) rather than
     # feeding year-old prices into indicators (#1021).
@@ -294,6 +314,8 @@ class StockstatsUtils:
         ],
     ):
         data = load_ohlcv(symbol, curr_date)
+        unsettled = data.attrs.get("latest_unsettled_date")
+        served = data.attrs.get("served_latest_date")
         df = wrap(data)
         df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
         curr_date_str = pd.to_datetime(curr_date).strftime("%Y-%m-%d")
@@ -304,5 +326,11 @@ class StockstatsUtils:
         if not matching_rows.empty:
             indicator_value = matching_rows[indicator].values[0]
             return indicator_value
+        elif unsettled:
+            return (
+                f"N/A: {symbol}'s bar for {unsettled} is not yet settled (no "
+                f"closing price available); data is from the most recent settled "
+                f"session ({served}), one trading day prior to the current date."
+            )
         else:
             return "N/A: Not a trading day (weekend or holiday)"

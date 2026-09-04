@@ -160,9 +160,16 @@ def get_stock_stats_indicators_window(
     curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     before = curr_date_dt - relativedelta(days=look_back_days)
 
+    latest_unsettled_date = None
+    served_latest_date = None
+
     # Optimized: Get stock data once and calculate indicators for all dates
     try:
         indicator_data = _get_stock_stats_bulk(symbol, indicator, curr_date)
+
+        # Pull out the recency flag surfaced by load_ohlcv.
+        latest_unsettled_date = indicator_data.pop("__latest_unsettled_date__", None)
+        served_latest_date = indicator_data.pop("__served_latest_date__", None)
 
         # Generate the date range we need
         current_dt = curr_date_dt
@@ -174,6 +181,11 @@ def get_stock_stats_indicators_window(
             # Look up the indicator value for this date
             if date_str in indicator_data:
                 indicator_value = indicator_data[date_str]
+            elif latest_unsettled_date and date_str == latest_unsettled_date:
+                # The requested day's bar exists but is unsettled (no close yet),
+                # not a missing trading day — say so explicitly rather than the
+                # generic weekend/holiday message.
+                indicator_value = "N/A: bar not yet settled (no closing price)"
             else:
                 indicator_value = "N/A: Not a trading day (weekend or holiday)"
 
@@ -206,6 +218,18 @@ def get_stock_stats_indicators_window(
         + best_ind_params.get(indicator, "No description available.")
     )
 
+    # If the requested date's bar was unsettled (session in progress / not yet
+    # published) and load_ohlcv degraded to the prior settled session, tell the
+    # agent explicitly so the report tells the user the data is a day (or more)
+    # prior to the current date — not silently present today's as settled.
+    if latest_unsettled_date:
+        result_str += (
+            f"\n\nNOTE: {symbol}'s bar for {latest_unsettled_date} is not yet "
+            f"settled (no closing price available), so all values are from the "
+            f"most recent settled session ({served_latest_date}). Treat the "
+            f"latest figures as one trading day prior to the current date."
+        )
+
     return result_str
 
 
@@ -222,6 +246,8 @@ def _get_stock_stats_bulk(
     from stockstats import wrap
 
     data = load_ohlcv(symbol, curr_date)
+    latest_unsettled = data.attrs.get("latest_unsettled_date")
+    served_latest = data.attrs.get("served_latest_date")
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 
@@ -239,6 +265,10 @@ def _get_stock_stats_bulk(
             result_dict[date_str] = "N/A"
         else:
             result_dict[date_str] = str(indicator_value)
+
+    # Stash the recency flag so callers can surface it to the user.
+    result_dict["__latest_unsettled_date__"] = latest_unsettled
+    result_dict["__served_latest_date__"] = served_latest
 
     return result_dict
 

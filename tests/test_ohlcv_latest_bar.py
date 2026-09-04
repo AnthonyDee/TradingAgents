@@ -4,8 +4,10 @@ yfinance can return the newest in-range bar with a NaN close (an unsettled or
 glitched session). The old path parsed dates without normalizing timezone and
 dropped every NaN-close row before applying the curr_date cutoff, so the latest
 bar disappeared and the previous trading day looked like the latest. Now dates
-are normalized, and a latest in-range bar with no close raises rather than
-silently falling back.
+are normalized. A latest in-range bar with no close is degraded gracefully —
+the unsettled trailing bar is dropped and the previous settled bar is served —
+so the analysis keeps running rather than aborting. Only when *every* in-range
+bar is un-priced does load_ohlcv raise.
 """
 from __future__ import annotations
 
@@ -97,14 +99,106 @@ def _run_load(monkeypatch, tmp_path, frame, curr_date):
 
 
 @pytest.mark.unit
-def test_latest_in_range_nan_close_raises_not_silent_fallback(monkeypatch, tmp_path):
-    # Newest bar (the curr_date) has no close -> raise, don't return Thursday.
+def test_latest_in_range_nan_close_degrades_to_previous_settled(monkeypatch, tmp_path):
+    # Newest bar (the curr_date) has a real Open/High but no close — an unsettled
+    # in-progress session. Degrade gracefully: drop it and serve the previous
+    # settled bar instead of raising and aborting the run.
     frame = pd.DataFrame({
         "Date": ["2026-05-07", "2026-05-08"],
         "Open": [100.0, 101.0], "High": [101.0, 102.0], "Low": [99.0, 100.0],
         "Close": [100.5, float("nan")], "Volume": [1_000_000, 1_000_000],
     })
-    with pytest.raises(NoMarketDataError, match="no closing price"):
+    out = _run_load(monkeypatch, tmp_path, frame, "2026-05-08")
+    assert out["Close"].iloc[-1] == 100.5
+    assert out["Date"].iloc[-1] == pd.Timestamp("2026-05-07")
+    assert (out["Date"] == pd.Timestamp("2026-05-08")).sum() == 0
+
+
+@pytest.mark.unit
+def test_unsettled_latest_bar_flags_recency_for_transparency(monkeypatch, tmp_path):
+    # When the degrade-to-previous-session path is taken because the requested
+    # date's bar is unsettled, the returned frame must carry a marker so callers
+    # can tell the user the data is a day prior to the current date.
+    frame = pd.DataFrame({
+        "Date": ["2026-05-07", "2026-05-08"],
+        "Open": [100.0, 101.0], "High": [101.0, 102.0], "Low": [99.0, 100.0],
+        "Close": [100.5, float("nan")], "Volume": [1_000_000, 1_000_000],
+    })
+    out = _run_load(monkeypatch, tmp_path, frame, "2026-05-08")
+    assert out.attrs["latest_unsettled_date"] == "2026-05-08"
+    assert out.attrs["served_latest_date"] == "2026-05-07"
+
+
+@pytest.mark.unit
+def test_no_recency_flag_when_curr_date_is_settled(monkeypatch, tmp_path):
+    # When the requested date's bar is fully settled, no recency flag is set.
+    frame = pd.DataFrame({
+        "Date": ["2026-05-07", "2026-05-08"],
+        "Open": [100.0, 101.0], "High": [101.0, 102.0], "Low": [99.0, 100.0],
+        "Close": [100.5, 101.5], "Volume": [1_000_000, 1_000_000],
+    })
+    out = _run_load(monkeypatch, tmp_path, frame, "2026-05-08")
+    assert "latest_unsettled_date" not in out.attrs
+    assert "served_latest_date" not in out.attrs
+
+
+@pytest.mark.unit
+def test_get_stock_stats_discloses_unsettled_instead_of_fake_trading_day(monkeypatch):
+    # StockstatsUtils.get_stock_stats must not return the misleading
+    # "Not a trading day" string when the real reason today's bar is absent is
+    # that the session is unsettled; it must name the prior settled date.
+    monkeypatch.setattr(su, "load_ohlcv", lambda s, d: _seeded_frame())
+    out = su.StockstatsUtils.get_stock_stats("HOOD", "rsi", "2026-05-08")
+    assert "not yet settled" in out
+    assert "2026-05-08" in out
+    assert "2026-05-07" in out
+
+
+def _seeded_frame():
+    # A frame whose latest bar (curr_date) was dropped as unsettled, carrying the
+    # recency flag that load_ohlcv would set.
+    frame = pd.DataFrame({
+        "Date": pd.to_datetime(["2026-05-07", "2026-05-08"]),
+        "Open": [100.0, 101.0], "High": [101.0, 102.0], "Low": [99.0, 100.0],
+        "Close": [100.5, float("nan")], "Volume": [1_000_000, 1_000_000],
+    })
+    frame = frame.dropna(subset=["Close"]).reset_index(drop=True)
+    frame.attrs["latest_unsettled_date"] = "2026-05-08"
+    frame.attrs["served_latest_date"] = "2026-05-07"
+    return frame
+
+
+@pytest.mark.unit
+def test_phantom_unpriced_trailing_bar_drops_to_previous_settled(monkeypatch, tmp_path):
+    # Newest in-range bar has no price at all (all of Open/High/Low/Close NaN —
+    # a phantom/in-progress row yfinance emits today with volume only). It carries
+    # no price signal, so it is dropped and the previous settled bar is served.
+    frame = pd.DataFrame({
+        "Date": ["2026-05-07", "2026-05-08"],
+        "Open": [100.0, float("nan")], "High": [101.0, float("nan")],
+        "Low": [99.0, float("nan")], "Close": [100.5, float("nan")],
+        "Volume": [1_000_000, 2_000_000],
+    })
+    out = _run_load(monkeypatch, tmp_path, frame, "2026-05-08")
+    assert out["Close"].iloc[-1] == 100.5
+    assert out["Date"].iloc[-1] == pd.Timestamp("2026-05-07")
+    assert (out["Date"] == pd.Timestamp("2026-05-08")).sum() == 0
+    # The requested day's bar is unpriced, so the recency flag is set too.
+    assert out.attrs["latest_unsettled_date"] == "2026-05-08"
+    assert out.attrs["served_latest_date"] == "2026-05-07"
+
+
+@pytest.mark.unit
+def test_all_unpriced_raises_no_settled_bar(monkeypatch, tmp_path):
+    # Every in-range bar is un-priced -> there is no usable bar, so raise rather
+    # than returning an empty frame downstream.
+    frame = pd.DataFrame({
+        "Date": ["2026-05-07", "2026-05-08"],
+        "Open": [float("nan"), float("nan")], "High": [float("nan"), float("nan")],
+        "Low": [float("nan"), float("nan")], "Close": [float("nan"), float("nan")],
+        "Volume": [1_000_000, 2_000_000],
+    })
+    with pytest.raises(NoMarketDataError, match="no settled OHLCV bar"):
         _run_load(monkeypatch, tmp_path, frame, "2026-05-08")
 
 
