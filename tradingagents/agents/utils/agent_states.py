@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated
 
 from langgraph.graph import MessagesState
@@ -65,6 +66,18 @@ class AgentState(MessagesState):
     # model that never writes a report can't loop forever before the run
     # force-continues to the research team.
     analyst_reruns: Annotated[dict[str, int], "Per-analyst re-run count"]
+
+    # Per-analyst confirmation of which data sources were captured and passed
+    # to the next LLM, keyed by analyst (e.g. "market") → {source_label: status}
+    # where status is one of ok / empty / unavailable / error. This is the
+    # auditable "data received" contract between the captured tool data and the
+    # downstream research/risk agents. Reducer merges each analyst's entry so
+    # multiple analysts can each record their own confirmation.
+    sources_received: Annotated[
+        dict[str, dict[str, str]],
+        operator.or_,
+        "Per-analyst data-source confirmation (label → ok/empty/unavailable/error)",
+    ]
 
     # researcher team discussion step
     investment_debate_state: Annotated[

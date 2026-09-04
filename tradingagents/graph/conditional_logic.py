@@ -102,29 +102,6 @@ class ConditionalLogic:
         self.selected_researchers = selected_researchers or ["bull", "bear"]
         self.selected_risk = selected_risk or ["aggressive", "conservative", "neutral"]
 
-    def should_continue_market(self, state: AgentState):
-        """Determine if market analysis should continue.
-
-        The analyst completes only once it has produced text *without* pending
-        tool calls.  When the model returns both text and tool calls in the
-        same turn, the tools must still be executed before the analyst can be
-        considered done — otherwise the tool loop would be skipped entirely,
-        leaving the analyst with no data to analyse.
-
-        An empty reply (a stalled model or a tool-only round with no prose) is
-        retried, bounded by ``max_side_retries`` so a model that never writes
-        a report can't loop forever.  Without this, an empty final message
-        would clear the analyst and silently drop its report from the final
-        report (#1094).
-        """
-        messages = state["messages"]
-        last_message = messages[-1]
-        if has_text_content(last_message) and not has_tool_calls(last_message):
-            return "Msg Clear Market"
-        if _trailing_empty_rounds(messages) >= self.max_side_retries:
-            return "Msg Clear Market"
-        return "tools_market"
-
     def should_continue_social(self, state: AgentState):
         """Determine if sentiment-analyst tool round should continue.
 
@@ -140,26 +117,6 @@ class ConditionalLogic:
         if _trailing_empty_rounds(messages) >= self.max_side_retries:
             return "Msg Clear Sentiment"
         return "tools_social"
-
-    def should_continue_news(self, state: AgentState):
-        """Determine if news analysis should continue."""
-        messages = state["messages"]
-        last_message = messages[-1]
-        if has_text_content(last_message) and not has_tool_calls(last_message):
-            return "Msg Clear News"
-        if _trailing_empty_rounds(messages) >= self.max_side_retries:
-            return "Msg Clear News"
-        return "tools_news"
-
-    def should_continue_fundamentals(self, state: AgentState):
-        """Determine if fundamentals analysis should continue."""
-        messages = state["messages"]
-        last_message = messages[-1]
-        if has_text_content(last_message) and not has_tool_calls(last_message):
-            return "Msg Clear Fundamentals"
-        if _trailing_empty_rounds(messages) >= self.max_side_retries:
-            return "Msg Clear Fundamentals"
-        return "tools_fundamentals"
 
     def should_continue_debate(self, state: AgentState) -> str:
         """Determine if debate should continue.

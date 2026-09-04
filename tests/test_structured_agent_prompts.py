@@ -130,13 +130,19 @@ def test_sentiment_prompt_states_constraint(monkeypatch):
 
 
 @pytest.mark.unit
-def test_tool_using_analysts_keep_their_date_guidance():
-    # The analysts that really do call tools keep the wording that anchors their
-    # tool date ranges (#836) — this fix is scoped to no-tool agents.
+def test_single_shot_analysts_no_longer_anchor_tool_date_ranges():
+    # The market / news / fundamentals analysts were migrated off the tool loop
+    # to the pre-fetch pattern: they fetch data deterministically in code, so
+    # they no longer instruct the model about "tool-call date ranges" (#836 was
+    # scoped to no-tool agents — now every analyst is no-tool). They all embed
+    # the NO_EXTERNAL_TOOLS constraint instead.
+    import tradingagents.agents.analysts.fundamentals_analyst as fundamentals
     import tradingagents.agents.analysts.market_analyst as market
     import tradingagents.agents.analysts.news_analyst as news
-    for module in (market, news):
-        assert "tool-call date ranges" in inspect.getsource(module)
+    for module in (market, news, fundamentals):
+        src = inspect.getsource(module)
+        assert "NO_EXTERNAL_TOOLS" in src
+        assert "tool-call date ranges" not in src
 
 
 @pytest.mark.unit

@@ -1,24 +1,30 @@
-"""Regression tests for the market-analyst report propagation bug.
+"""Regression tests for the market-analyst report propagation.
 
-A thinking/reasoning provider can return a final assistant message that
-carries report text *and* a recorded ``tool_calls`` entry. Previously the
-analysts dropped the report whenever ``tool_calls`` was non-empty
-(``if len(result.tool_calls) == 0: report = result.content``), leaving
-``market_report`` empty so the Bull/Bear/research agents produced reports
-without the market analyst's findings.
+The market analyst was migrated from an LLM tool-calling loop to the pre-fetch
+pattern: it fetches the verified market snapshot and raw OHLCV deterministically
+in code, tags them as prompt blocks, and invokes the LLM once to write prose.
+This file guards the contract that:
+
+- the fetched data is *confirmed* as ``sources_received`` (label -> status),
+  so the next stage can audit that data was captured and passed on;
+- the report is the LLM's prose (plus the confirmation line), never a raw data
+  dump as-is;
+- empty/failed fetches degrade to ``empty``/``error`` statuses rather than
+  aborting or leaking raw output into the report.
 """
 
+import contextlib
 import unittest
+from unittest import mock
 
 from langchain_core.messages import AIMessage
-from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.runnables import Runnable
 
 from tradingagents.agents.analysts.market_analyst import create_market_analyst
 from tradingagents.agents.utils.agent_utils import (
-    extract_text_content,
-    has_text_content,
+    get_stock_data,
+    get_verified_market_snapshot,
 )
-from tradingagents.graph.conditional_logic import ConditionalLogic
 
 
 def _minimal_state(ticker="AAPL"):
@@ -32,269 +38,104 @@ def _minimal_state(ticker="AAPL"):
     }
 
 
-class ExtractTextContentTests(unittest.TestCase):
-    def test_string_content_with_tool_call_is_kept(self):
-        msg = AIMessage(
-            content="The market is bullish over the medium term.",
-            tool_calls=[{"name": "get_stock_data", "args": {}, "id": "x"}],
-        )
-        self.assertEqual(
-            extract_text_content(msg),
-            "The market is bullish over the medium term.",
-        )
-        self.assertTrue(has_text_content(msg))
-
-    def test_list_of_text_blocks_is_concatenated(self):
-        msg = AIMessage(
-            content=[
-                {"type": "text", "text": "First paragraph."},
-                {"type": "text", "text": "Second paragraph."},
-            ]
-        )
-        self.assertEqual(
-            extract_text_content(msg),
-            "First paragraph.\nSecond paragraph.",
-        )
-
-    def test_tool_blocks_without_text_are_empty(self):
-        msg = AIMessage(
-            content=[{"type": "tool_use", "id": "x", "name": "get_stock_data"}],
-            tool_calls=[{"name": "get_stock_data", "args": {}, "id": "x"}],
-        )
-        self.assertEqual(extract_text_content(msg), "")
-        self.assertFalse(has_text_content(msg))
-
-    def test_empty_content_is_empty(self):
-        msg = AIMessage(content="")
-        self.assertEqual(extract_text_content(msg), "")
-        self.assertFalse(has_text_content(msg))
-
-
 class _StubLLM(Runnable):
-    """A minimal Runnable stand-in for the analyst's LLM.
+    """A stub LLM whose ``invoke`` returns a canned AIMessage.
 
-    ``create_market_analyst`` builds ``prompt | llm.bind_tools(tools)`` then
-    calls ``chain.invoke(state["messages"])``. ``bind_tools`` must yield a real
-    Runnable for the pipe operator, so it returns a ``RunnableLambda`` that
-    ignores the incoming prompt and returns the canned reply.
+    ``create_market_analyst`` builds ``prompt | llm`` and calls
+    ``chain.invoke(messages)``; the stub's ``invoke`` is reached through the
+    runnable pipe and returns the canned reply. ``texts`` (when given) cycles
+    through canned replies to simulate a retry that eventually succeeds.
     """
 
-    def __init__(self, reply):
+    def __init__(self, reply=None, texts=()):
         self._reply = reply
-
-    def bind_tools(self, tools):
-        return RunnableLambda(lambda *_args, **_kwargs: self._reply)
+        self._texts = list(texts)
+        self._index = 0
 
     def invoke(self, *args, **kwargs):
+        if self._texts:
+            text = self._texts[self._index % len(self._texts)]
+            self._index += 1
+            return AIMessage(content=text)
         return self._reply
 
 
-class _FallbackStubLLM(Runnable):
-    """A stub whose tool-bound path returns empty but whose bare path returns text.
+@contextlib.contextmanager
+def _patch_fetchers(snapshot_out="snapshot table", ohlcv_out="ohlcv csv"):
+    """Patch the two data fetchers the market analyst pre-fetches in code.
 
-    Simulates a model stuck in an empty tool loop (bind_tools rounds all emit
-    tool calls with no prose) that can still be coaxed into writing a report
-    when invoked WITHOUT tools. Used to verify the no-tools fallback fires and
-    guarantees a non-empty market_report at the retry boundary.
+    Yields (snapshot_mock, ohlcv_mock) so tests can assert they were called.
     """
-
-    def __init__(self, fallback_text):
-        self._fallback_text = fallback_text
-
-    def bind_tools(self, tools):
-        return RunnableLambda(
-            lambda *_args, **_kwargs: AIMessage(
-                content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "t"}]
-            )
-        )
-
-    def invoke(self, *args, **kwargs):
-        return AIMessage(content=self._fallback_text)
+    with mock.patch.object(
+        get_verified_market_snapshot, "func", return_value=snapshot_out
+    ) as snap_mock, mock.patch.object(
+        get_stock_data, "func", return_value=ohlcv_out
+    ) as ohlcv_mock:
+        yield snap_mock, ohlcv_mock
 
 
 class MarketAnalystReportPropagationTests(unittest.TestCase):
-    def test_report_kept_when_final_message_has_tool_call(self):
-        # Mimic a thinking provider: report text AND a tool_call on the same
-        # final message. This used to drop market_report.
-        reply = AIMessage(
-            content="Bullish medium-term trend with rising RSI.",
-            tool_calls=[{"name": "get_indicators", "args": {}, "id": "t"}],
-        )
-
-        node = create_market_analyst(_StubLLM(reply))
-        out = node(_minimal_state())
+    def test_report_kept_when_model_writes_prose(self):
+        with _patch_fetchers() as (snap_patch, ohlcv_patch):
+            node = create_market_analyst(_StubLLM(AIMessage(content="Bullish medium-term trend with rising RSI.")))
+            out = node(_minimal_state())
 
         self.assertTrue(out["market_report"].startswith("Bullish medium-term trend"), out)
         self.assertIn("RSI", out["market_report"])
+        # Both fetchers were actually invoked (data was captured).
+        snap_patch.assert_called()
+        ohlcv_patch.assert_called()
 
-    def test_pure_tool_call_leg_produces_empty_report(self):
-        reply = AIMessage(
-            content="",
-            tool_calls=[{"name": "get_stock_data", "args": {}, "id": "t"}],
+    def test_sources_received_confirms_captured_sources(self):
+        with _patch_fetchers() as (_snap, _ohlcv):
+            node = create_market_analyst(_StubLLM(AIMessage(content="Analysis.")))
+            out = node(_minimal_state())
+
+        confirmations = out["sources_received"]["market"]
+        self.assertEqual(confirmations["market_snapshot"], "ok")
+        self.assertEqual(confirmations["ohlcv"], "ok")
+        self.assertIn("market_snapshot=ok", out["market_report"])
+
+    def test_verified_snapshot_is_prefetched_not_emitted_raw(self):
+        # The verified snapshot table must not itself be returned verbatim as
+        # the report — the report is the LLM's prose plus the confirmation line.
+        with _patch_fetchers(snapshot_out="| Close | 761.78 |", ohlcv_out="Date,Close") as _:
+            node = create_market_analyst(_StubLLM(AIMessage(content="The pullback is approaching support.")))
+            out = node(_minimal_state())
+
+        self.assertIn("support", out["market_report"])
+        self.assertNotEqual(out["market_report"], "| Close | 761.78 |")
+        self.assertNotIn("| Close | 761.78 |", out["market_report"])
+
+    def test_empty_fetch_reports_empty_status_not_crash(self):
+        with _patch_fetchers(snapshot_out="", ohlcv_out="NO_DATA_AVAILABLE"):
+            node = create_market_analyst(_StubLLM(AIMessage(content="No live data, so defer.")))
+            out = node(_minimal_state())
+
+        confirmations = out["sources_received"]["market"]
+        self.assertEqual(confirmations["market_snapshot"], "empty")
+        self.assertEqual(confirmations["ohlcv"], "unavailable")
+        self.assertIn("No live data", out["market_report"])
+
+    def test_empty_model_prose_degrades_to_confirmation_line_not_raw(self):
+        # If the model never writes prose (after bounded retries), the report
+        # must not leak raw fetched data — it degrades to the confirmation line.
+        with _patch_fetchers(snapshot_out="| Close | 761.78 |", ohlcv_out="raw ohlcv"):
+            node = create_market_analyst(_StubLLM(AIMessage(content="")))
+            out = node(_minimal_state())
+
+        self.assertIn("> Data sources received:", out["market_report"])
+        self.assertNotIn("| Close |", out["market_report"])
+        self.assertNotIn("raw ohlcv", out["market_report"])
+
+    def test_bounded_retry_coaxes_text_then_uses_it(self):
+        # First invocation empty, retry (with reminder) returns prose.
+        node = create_market_analyst(
+            _StubLLM(texts=("", "Momentum has shifted after retrying."))
         )
-
-        node = create_market_analyst(_StubLLM(reply))
-        out = node(_minimal_state())
-        self.assertEqual(out["market_report"], "")
-
-    def test_report_not_overwritten_by_empty_round(self):
-        # An empty tool round must not clobber an existing report.
-        # This reproduces the intermittent drop where a later empty AIMessage
-        # overwrote a good report because the node used last-write-wins.
-        state = _minimal_state()
-        state["market_report"] = "Existing detailed market analysis."
-        reply = AIMessage(
-            content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "t"}]
-        )
-        node = create_market_analyst(_StubLLM(reply))
-        out = node(state)
-        self.assertEqual(out["market_report"], "Existing detailed market analysis.")
-
-    def test_no_tools_fallback_fires_at_retry_boundary(self):
-        # The model is stuck: every tool-bound round returns empty. Once the
-        # trailing-empty count reaches the retry boundary (budget-1), the node
-        # must synthesize a report with a no-tools invocation so market_report
-        # is never silently dropped (#1094).
-        from langchain_core.messages import ToolMessage
-
-        state = _minimal_state()
-        # Two prior empty tool rounds (trailing_empty == 2, which is
-        # max_side_retries(3) - 1) => the fallback should fire.
-        state["messages"] = [
-            AIMessage(content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "1"}]),
-            ToolMessage(content="{}", tool_call_id="1"),
-            AIMessage(content="", tool_calls=[{"name": "get_stock_data", "args": {}, "id": "2"}]),
-            ToolMessage(content="{}", tool_call_id="2"),
-        ]
-        node = create_market_analyst(_FallbackStubLLM("Fallback market analysis."))
-        out = node(state)
-        self.assertEqual(out["market_report"], "Fallback market analysis.")
-        self.assertIn("market_report", out)
-        self.assertTrue(out["messages"])
-
-    def test_quote_error_does_not_clobber_stock_data(self):
-        # A failed get_realtime_quote leaves an error ToolMessage as the most
-        # recent tool result. When the model clears with no prose, the rescue
-        # path must skip the error and fall back to the earlier get_stock_data
-        # output instead of either reporting the error string or silently
-        # dropping the valid data.
-        from langchain_core.messages import ToolMessage
-
-        csv_out = (
-            "Date,Open,High,Low,Close,Volume\n"
-            "2026-08-28,230.1,232.5,228.9,231.8,52000000\n"
-            "2026-08-29,232.0,233.9,230.2,233.4,48000000"
-        )
-        reply = AIMessage(
-            content="",
-            tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "2"}],
-        )
-        state = _minimal_state()
-        state["messages"] = [
-            AIMessage(
-                content="Initial read on the tape.",
-                tool_calls=[{"name": "get_stock_data", "args": {}, "id": "1"}],
-            ),
-            ToolMessage(content=csv_out, tool_call_id="1", name="get_stock_data"),
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "2"}],
-            ),
-            ToolMessage(
-                content='[realtime quote unavailable] MCP error: invalid params: validating "arguments"',
-                tool_call_id="2",
-                name="get_realtime_quote",
-            ),
-        ]
-        node = create_market_analyst(_StubLLM(reply))
-        out = node(state)
-        self.assertEqual(out["market_report"], csv_out)
-        self.assertNotIn("realtime quote unavailable", out["market_report"])
-
-    def test_all_errors_preserve_previous_report(self):
-        # When the ONLY tool round errored (no usable data tool output), never
-        # surface the error string as the report — keep the prior market_report.
-        from langchain_core.messages import ToolMessage
-
-        reply = AIMessage(content="")
-        state = _minimal_state()
-        state["market_report"] = "Existing detailed market analysis."
-        state["messages"] = [
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "get_realtime_quote", "args": {"symbol": "AAPL"}, "id": "1"}],
-            ),
-            ToolMessage(
-                content='[realtime quote unavailable] MCP error: invalid params: validating "arguments"',
-                tool_call_id="1",
-                name="get_realtime_quote",
-            ),
-        ]
-        node = create_market_analyst(_StubLLM(reply))
-        out = node(state)
-        self.assertEqual(out["market_report"], "Existing detailed market analysis.")
-
-
-class ConditionalLogicStopTests(unittest.TestCase):
-    def setUp(self):
-        self.logic = ConditionalLogic()
-
-    def test_market_terminates_when_text_present_even_with_tool_calls(self):
-        state = _minimal_state()
-        state["messages"] = [
-            AIMessage(
-                content="Report delivered.",
-                tool_calls=[{"name": "get_stock_data", "args": {}, "id": "x"}],
-            )
-        ]
-        self.assertEqual(
-            self.logic.should_continue_market(state),
-            "Msg Clear Market",
-        )
-
-    def test_market_keeps_tool_round_for_textless_tool_call(self):
-        state = _minimal_state()
-        state["messages"] = [
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "get_stock_data", "args": {}, "id": "x"}],
-            )
-        ]
-        self.assertEqual(
-            self.logic.should_continue_market(state),
-            "tools_market",
-        )
-
-    def test_market_forces_clear_after_max_empty_rounds(self):
-        # Three consecutive empty AIMessages should force clear to avoid infinite loop.
-        state = _minimal_state()
-        from langchain_core.messages import ToolMessage
-
-        state["messages"] = [
-            AIMessage(content=""),  # 1
-            ToolMessage(content="{}", tool_call_id="1"),
-            AIMessage(content=""),  # 2
-            ToolMessage(content="{}", tool_call_id="2"),
-            AIMessage(content=""),  # 3
-        ]
-        self.assertEqual(
-            self.logic.should_continue_market(state),
-            "Msg Clear Market",
-        )
-
-    def test_market_retries_when_empty_rounds_below_max(self):
-        state = _minimal_state()
-        from langchain_core.messages import ToolMessage
-
-        state["messages"] = [
-            AIMessage(content=""),  # 1
-            ToolMessage(content="{}", tool_call_id="1"),
-            AIMessage(content=""),  # 2
-        ]
-        self.assertEqual(
-            self.logic.should_continue_market(state),
-            "tools_market",
-        )
+        with _patch_fetchers():
+            out = node(_minimal_state())
+        self.assertIn("Momentum has shifted", out["market_report"])
 
 
 if __name__ == "__main__":

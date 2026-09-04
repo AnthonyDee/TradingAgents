@@ -67,6 +67,10 @@ class Propagator:
             "sentiment_report": "",
             "news_report": "",
             "analyst_reruns": {},
+            # Per-analyst data-source confirmation (label -> status), populated
+            # as each analyst pre-fetches and confirms its data blocks. Empty
+            # until the first analyst runs; see agent_states.sources_received.
+            "sources_received": {},
         }
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:

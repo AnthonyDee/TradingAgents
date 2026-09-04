@@ -14,18 +14,7 @@ from langgraph.prebuilt import ToolNode
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
-    get_balance_sheet,
-    get_cashflow,
-    get_fundamentals,
-    get_global_news,
-    get_income_statement,
-    get_indicators,
-    get_insider_transactions,
-    get_macro_indicators,
     get_news,
-    get_prediction_markets,
-    get_stock_data,
-    get_verified_market_snapshot,
     resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
@@ -210,62 +199,18 @@ class TradingAgentsGraph:
         return kwargs
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
-        """Create tool nodes for different data sources using abstract methods."""
-        # Tolerate the unbound-call pattern exercised by tests
-        # (``TradingAgentsGraph._create_tool_nodes(None)``): defer to the class
-        # default (no realtime tools) instead of raising on ``None``.
-        realtime_quote_tools = getattr(self, "realtime_quote_tools", None) or ()
+        """Create tool nodes for the analyst that still runs an LLM tool loop.
+
+        The market, news, and fundamentals analysts were migrated to the
+        pre-fetch + tagged data-block pattern (they fetch deterministically in
+        code and write once), so only the sentiment analyst keeps a LangGraph
+        ToolNode. Keeping the dict keyed by spec for lookup compatibility.
+        """
         return {
-            "market": ToolNode(
-                [
-                    # Core stock data tools
-                    get_stock_data,
-                    # Technical indicators
-                    get_indicators,
-                    # Deterministic verification snapshot (bound to the analyst
-                    # LLM and required by its prompt; must be executable here or
-                    # the call fails and the model reports it "unavailable").
-                    get_verified_market_snapshot,
-                    # Realtime market-data tools from connected MCP servers
-                    # (e.g. Robinhood quotes). Empty when none configured.
-                    *realtime_quote_tools,
-                ]
-            ),
             "social": ToolNode(
                 [
                     # News tools for social media analysis
                     get_news,
-                ]
-            ),
-            "news": ToolNode(
-                [
-                    # News and insider information
-                    get_news,
-                    get_global_news,
-                    get_insider_transactions,
-                    get_macro_indicators,
-                    get_prediction_markets,
-                    # Verified current-price snapshot so the news analyst can
-                    # ground any price-level claim even when the market analyst
-                    # is not in the selected analyst set.
-                    get_verified_market_snapshot,
-                    # Realtime market-data tools from connected MCP servers.
-                    *realtime_quote_tools,
-                ]
-            ),
-            "fundamentals": ToolNode(
-                [
-                    # Fundamental analysis tools
-                    get_fundamentals,
-                    get_balance_sheet,
-                    get_cashflow,
-                    get_income_statement,
-                    # Verified current-price snapshot so the fundamentals analyst
-                    # can ground any price-level claim even when the market
-                    # analyst is not in the selected analyst set.
-                    get_verified_market_snapshot,
-                    # Realtime market-data tools from connected MCP servers.
-                    *realtime_quote_tools,
                 ]
             ),
         }

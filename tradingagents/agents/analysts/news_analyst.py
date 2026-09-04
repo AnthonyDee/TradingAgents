@@ -1,8 +1,9 @@
+from datetime import datetime, timedelta
+
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
-    _is_tool_output_only,
-    analyst_tool_loop_stuck,
     extract_text_content,
     get_global_news,
     get_instrument_context_from_state,
@@ -11,115 +12,153 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
     get_verified_market_snapshot,
-    has_tool_calls,
-    invoke_no_tools_fallback,
 )
+from tradingagents.agents.utils.prefetch import (
+    UNAVAILABLE_MARKERS,
+    DataSource,
+    fetch_sources,
+    format_sources_received,
+    render_tagged_blocks,
+)
+from tradingagents.agents.utils.structured import NO_EXTERNAL_TOOLS
 
 
-def create_news_analyst(llm, mcp_tools=None, max_side_retries=3):
+def _seven_days_back(trade_date: str) -> str:
+    return (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+
+
+def _join_optional(blocks):
+    """Join optional per-item sub-blocks, dropping empty / error / unavailable ones.
+
+    Enrichment vendors (FRED, Polymarket) degrade per-indicator by returning a
+    ``DATA_UNAVAILABLE`` sentinel string or raising; a single failing indicator
+    should not mark the whole macro/prediction block unavailable, so we filter
+    each sub-block independently.
+    """
+    kept = []
+    for chunk in blocks:
+        try:
+            text = (chunk or "").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if not text:
+            continue
+        if any(marker in text for marker in UNAVAILABLE_MARKERS):
+            continue
+        kept.append(text)
+    return "\n\n".join(kept)
+
+
+# A small, deterministic set of macro indicators the news analyst grounds its
+# macroeconomic commentary on. Each is fetched independently; any that the
+# configured vendor can't serve simply land in the sources_received line as
+# empty / unavailable instead of failing the analyst.
+_MACRO_INDICATORS = ("fed_funds_rate", "10y_treasury", "cpi", "unemployment")
+
+# Forward-looking event topics to pull live market-implied probabilities for.
+_PREDICTION_TOPICS = ("Fed rate cut", "recession 2026")
+
+
+def create_news_analyst(llm, mcp_tools=None, max_side_retries=3, analyst_key="news"):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
+        ticker = str(state["company_of_interest"])
+        start_date = _seven_days_back(current_date)
 
-        tools = [
-            get_news,
-            get_global_news,
-            get_macro_indicators,
-            get_prediction_markets,
-            get_verified_market_snapshot,
+        sources = [
+            DataSource("news", lambda: get_news.func(ticker, start_date, current_date)),
+            DataSource("global_news", lambda: get_global_news.func(current_date)),
+            DataSource("market_snapshot", lambda: get_verified_market_snapshot.func(ticker, current_date, 30)),
         ]
-        # Realtime market-data tools (e.g. Robinhood quotes) from connected MCP
-        # servers. Empty when none configured.
-        tools.extend(mcp_tools or [])
+        # Macro indicators are kept together under one block so the prompt stays
+        # compact; each indicator is its own fetch, so partial failure never
+        # aborts the rest.
+        sources.append(DataSource(
+            "macro",
+            lambda: _join_optional(
+                f"--- {ind} ---\n{get_macro_indicators.func(ind, current_date, 180)}" for ind in _MACRO_INDICATORS
+            ),
+        ))
+        sources.append(DataSource(
+            "prediction_markets",
+            lambda: _join_optional(
+                f"--- {topic} ---\n{get_prediction_markets.func(topic)}" for topic in _PREDICTION_TOPICS
+            ),
+        ))
 
-        system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for {asset_label}-specific news by ticker symbol, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events), and get_verified_market_snapshot(symbol, curr_date, look_back_days) for the verified current price and recent OHLCV of the ticker. Before making any claim about the current share price, price level, or recent percentage move, call get_verified_market_snapshot and treat its latest row as the source of truth; do not invent or guess a price. Provide specific, actionable insights with supporting evidence to help traders make informed decisions. If a realtime quote tool (get_realtime_quote(symbol)) appears in your tool list, call it for the current ticker. In your report, explicitly state the live quote: the current/last trade price, the bid and ask (when non-zero), and the quote's as-of timestamp, then reconcile it with the verified snapshot close (note any gap and which value you treat as the current price). Prefer the live quote for the current-price framing when its timestamp is recent; otherwise defer to the verified snapshot and phrase the price as of the relevant date. Always call get_verified_market_snapshot as well. If the realtime quote call errors or returns '[realtime quote unavailable]', explicitly say the live quote is unavailable and proceed using the verified snapshot as the current price — do not keep retrying the quote call."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction()
-        )
+        blocks, confirmations = fetch_sources(sources)
+        data_block = render_tagged_blocks(blocks)
+        sources_line = format_sources_received(confirmations)
+
+        system_message = _build_system_message(asset_label, data_block, sources_line)
 
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
                     "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}."
-                    " Today's date is {current_date}; treat it as 'now' for all analysis and tool-call date ranges. {instrument_context}\n"
-                    "{system_message}",
+                    " Today's date is {current_date}; treat it as 'now' for all analysis. {instrument_context}\n"
+                    + NO_EXTERNAL_TOOLS
+                    + "\n{system_message}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
         )
-
         prompt = prompt.partial(system_message=system_message)
-        prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
+        chain = prompt | llm
 
-        # If the model returned empty content with no tool calls, it failed
-        # to engage with the tools. Re-invoke with an explicit reminder.
-        if not extract_text_content(result).strip() and not has_tool_calls(result):
-            from langchain_core.messages import HumanMessage
-
-            reminder = HumanMessage(
-                content=(
-                    "You have not yet called any tools. You MUST call "
-                    "get_news and get_global_news to fetch relevant news, "
-                    "get_macro_indicators for economic data, and "
-                    "get_verified_market_snapshot for current price data. "
-                    "Do not write a report without fetching data first."
-                )
-            )
-            result = chain.invoke(state["messages"] + [reminder])
-
-        # Only overwrite the report with a non-empty write-up. During the tool
-        # loop the model commonly returns empty content alongside tool_calls;
-        # writing "" on those rounds would clobber any report already produced
-        # and, if the loop ends truncated, leave the report empty so it drops
-        # out of the final report (#1094). The graph's analyst completion gate
-        # re-runs this node when the report is still empty.
-        text = extract_text_content(result).strip()
-
-        is_dump = bool(text) and _is_tool_output_only(text)
-        loop_stuck = analyst_tool_loop_stuck(state["messages"], max_side_retries)
-
-        if text and not is_dump and not has_tool_calls(result):
-            ordered_report = text
-        elif has_tool_calls(result):
-            if loop_stuck:
-                # LLM stuck in tool loop — force fallback to generate report
-                fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
-                ordered_report = extract_text_content(fallback).strip()
-                if ordered_report:
-                    result = fallback
-            else:
-                # LLM produced tool calls (possibly with empty text) — let the
-                # graph's tool loop execute them on the next round.
-                ordered_report = ""
-        elif state.get("news_report") or "":
-            ordered_report = state["news_report"]
-        elif loop_stuck:
-            # Exhausted retries — the LLM never wrote prose, synthesize via fallback
-            fallback = invoke_no_tools_fallback(prompt, llm, state["messages"])
-            ordered_report = extract_text_content(fallback).strip()
-            if ordered_report:
-                result = fallback
-        else:
-            ordered_report = ""
+        report_text = _invoke_with_retry(chain, state["messages"], max_side_retries)
+        ordered_report = f"{report_text}\n\n{sources_line}" if report_text else sources_line
 
         return {
-            "messages": [result],
+            "messages": [AIMessage(content=ordered_report)],
             "news_report": ordered_report,
+            "sources_received": {analyst_key: {**confirmations}},
         }
 
     return news_analyst_node
+
+
+def _invoke_with_retry(chain, messages, max_retries: int) -> str:
+    reminder = HumanMessage(
+        content=(
+            "Analyze the data blocks provided in this prompt and write your "
+            "news/macro report now. Do not call tools and do not echo the raw "
+            "data blocks back — synthesize a narrative report from them."
+        )
+    )
+    attempts = max(max_retries, 1)
+    for i in range(attempts):
+        msgs = messages if i == 0 else messages + [reminder]
+        text = extract_text_content(chain.invoke(msgs)).strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_system_message(asset_label: str, data_block: str, sources_line: str) -> str:
+    return f"""You are a news researcher analyzing recent news and trends relevant for trading and macroeconomics. You have been given pre-fetched data in the tagged blocks below; use them as the source of truth and never invent or guess information that is not present.
+
+{sources_line}
+
+## Data (pre-fetched, in this prompt)
+
+{data_block}
+
+## How to write your report
+
+- ``news`` is {asset_label}-specific news by ticker. ``global_news`` is broader macroeconomic news. ``macro`` holds macroeconomic indicator time series (policy rate, Treasury yield, CPI, unemployment). ``prediction_markets`` holds live market-implied probabilities of forward-looking events. ``market_snapshot`` is the verified current price / OHLCV source of truth.
+- Before stating the current share price, a price level, or a recent percentage move, cite ``market_snapshot``. Do not guess a price.
+- Provide specific, actionable insights with supporting evidence to help traders make informed decisions.
+- Only cite the tagged data blocks above.
+- If a data block is missing or a source is marked ``empty``/``unavailable``/``error`` in the sources line, say so explicitly rather than guessing.
+- Append a Markdown table at the end to organize the key points.{get_language_instruction()}"""
+
+
+__all__ = ["create_news_analyst"]

@@ -10,6 +10,11 @@ class AnalystNodeSpec:
     clear_node: str
     tool_node: str
     report_key: str
+    # Whether this analyst runs an LLM tool-calling loop (analyst -> tools ->
+    # analyst ...) before writing its report. False (single-shot) analysts fetch
+    # their data deterministically in code and write once, so they are wired
+    # straight from the analyst node to the clear/gate node with no tool loop.
+    loops_tools: bool = True
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,7 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         clear_node="Msg Clear Market",
         tool_node="tools_market",
         report_key="market_report",
+        loops_tools=False,
     ),
     "social": AnalystNodeSpec(
         # Wire key stays "social" for saved-config back-compat; the
@@ -42,6 +48,7 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         clear_node="Msg Clear News",
         tool_node="tools_news",
         report_key="news_report",
+        loops_tools=False,
     ),
     "fundamentals": AnalystNodeSpec(
         key="fundamentals",
@@ -49,6 +56,7 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         clear_node="Msg Clear Fundamentals",
         tool_node="tools_fundamentals",
         report_key="fundamentals_report",
+        loops_tools=False,
     ),
 }
 

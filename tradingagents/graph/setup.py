@@ -154,17 +154,20 @@ class GraphSetup:
                 self.quick_thinking_llm,
                 mcp_tools=self.realtime_quote_tools,
                 max_side_retries=max_reruns,
+                analyst_key="market",
             ),
             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
             "news": lambda: create_news_analyst(
                 self.quick_thinking_llm,
                 mcp_tools=self.realtime_quote_tools,
                 max_side_retries=max_reruns,
+                analyst_key="news",
             ),
             "fundamentals": lambda: create_fundamentals_analyst(
                 self.quick_thinking_llm,
                 mcp_tools=self.realtime_quote_tools,
                 max_side_retries=max_reruns,
+                analyst_key="fundamentals",
             ),
         }
 
@@ -212,7 +215,8 @@ class GraphSetup:
         for spec in plan.specs:
             workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
             workflow.add_node(spec.clear_node, create_msg_delete())
-            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
+            if spec.loops_tools:
+                workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add researcher nodes conditionally (only add if enabled)
         if bull_researcher_node is not None:
@@ -261,13 +265,20 @@ class GraphSetup:
                 plan.specs[i + 1].agent_node if not is_last else None
             )
 
-            # Add conditional edges for current analyst
-            workflow.add_conditional_edges(
-                current_analyst,
-                getattr(self.conditional_logic, f"should_continue_{spec.key}"),
-                [current_tools, current_clear],
-            )
-            workflow.add_edge(current_tools, current_analyst)
+            if spec.loops_tools:
+                # Tool-loop analysts: analyst -> tools -> analyst ... until the
+                # model writes prose, then -> clear -> gate.
+                workflow.add_conditional_edges(
+                    current_analyst,
+                    getattr(self.conditional_logic, f"should_continue_{spec.key}"),
+                    [current_tools, current_clear],
+                )
+                workflow.add_edge(current_tools, current_analyst)
+            else:
+                # Single-shot analysts (market / news / fundamentals): data is
+                # pre-fetched deterministically in code, so there is no tool
+                # loop — write the report once and go straight to the gate.
+                workflow.add_edge(current_analyst, current_clear)
 
             # Completion gate: a state-writing node that counts re-runs, plus a
             # conditional router that decides whether to re-run this analyst or

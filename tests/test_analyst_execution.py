@@ -17,6 +17,18 @@ class AnalystExecutionPlanTests(unittest.TestCase):
         self.assertEqual(plan.specs[0].tool_node, "tools_news")
         self.assertEqual(plan.specs[0].clear_node, "Msg Clear News")
 
+    def test_news_and_market_are_single_shot_not_tool_loop(self):
+        # The market / news / fundamentals analysts were migrated to the
+        # pre-fetch pattern: they fetch data deterministically in code, so they
+        # must NOT run a tool loop. Only the sentiment analyst (social) keeps
+        # loops_tools=True.
+        plan = build_analyst_execution_plan(["news", "market", "fundamentals", "social"])
+        by_key = {spec.key: spec for spec in plan.specs}
+        self.assertFalse(by_key["news"].loops_tools)
+        self.assertFalse(by_key["market"].loops_tools)
+        self.assertFalse(by_key["fundamentals"].loops_tools)
+        self.assertTrue(by_key["social"].loops_tools)
+
     def test_rejects_unknown_analyst_keys(self):
         with self.assertRaises(ValueError):
             build_analyst_execution_plan(["market", "macro"])

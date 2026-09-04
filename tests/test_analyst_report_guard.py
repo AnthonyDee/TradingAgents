@@ -1,102 +1,78 @@
-"""The analyst nodes must only write a *prose analysis* as their report — never
-a verbatim dump of the raw tool output (e.g. the verified market snapshot
-tables). A raw table dump must not be allowed to satisfy the completion gate as
-a "finished report" (that would end the analyst without any analysis).
+"""The analyst nodes must only hand a *prose analysis* (plus the auditable
+sources confirmation) to the next stage — never a verbatim dump of raw tool
+output. With the pre-fetch pattern, the guarantee is enforced structurally:
 
-Regression guard for market analyst returning raw snapshot tables as its
-report instead of interpreting the data.
+- data is fetched deterministically in code and classified into tagged blocks;
+- ``fetch_sources`` returns a status (ok / empty / unavailable / error) so a
+  downstream consumer can see exactly what was captured;
+- raw/unavailable/empty fetches degrade to a status instead of aborting or
+  surfacing vendor sentinel text as if it were real data.
+
+Regression guard: replaces the old heuristic rescue helpers (``_is_tool_output_only``
+/ ``rescue_tool_output``) that were removed with the tool-loop migration.
 """
 
 import unittest
 
-from langchain_core.messages import ToolMessage
-
-from tradingagents.agents.utils.agent_utils import (
-    _is_tool_output_only,
-    rescue_tool_output,
+from tradingagents.agents.utils.prefetch import (
+    UNAVAILABLE_MARKERS,
+    DataSource,
+    fetch_sources,
+    format_sources_received,
+    render_tagged_blocks,
 )
 
 
-class ToolOutputOnlyDetectionTests(unittest.TestCase):
-    def test_table_only_output_is_a_dump(self):
-        dump = (
-            "| Field | Value |\n"
-            "|---|---:|\n"
-            "| Close | 761.78 |\n"
-            "| RSI | 48.62 |\n"
-        )
-        self.assertTrue(_is_tool_output_only(dump))
+class FetchSourcesClassificationTests(unittest.TestCase):
+    def test_ok_status_and_block(self):
+        blocks, statuses = fetch_sources([DataSource("news", lambda: "headlines")])
+        self.assertEqual(statuses["news"], "ok")
+        self.assertEqual(blocks["news"], "headlines")
 
-    def test_verified_snapshot_verbatim_is_a_dump(self):
-        snapshot = (
-            "## Verified market data snapshot for SPY\n\n"
-            "### Latest verified OHLCV row\n\n"
-            "| Field | Value |\n|---|---:|\n| Close | 761.78 |\n\n"
-            "### Verified technical indicators (latest row)\n\n"
-            "| Indicator | Value |\n|---|---:|\n| rsi | 48.62 |\n\n"
-            "### Recent verified closes (last 30 rows)\n\n"
-            "| Date | Close |\n|---|---:|\n| 2026-09-01 | 761.78 |\n\n"
-            "Use this snapshot as the source of truth for exact OHLCV, "
-            "price-level, and indicator-value claims. If another tool output "
-            "conflicts with it, flag the discrepancy rather than inventing a "
-            "reconciled number."
-        )
-        # Even though the snapshot carries a prose disclaimers footer, echoing it
-        # verbatim as the report is a data dump, not analysis.
-        self.assertTrue(_is_tool_output_only(snapshot))
+    def test_empty_and_error_and_unavailable(self):
+        def boom():
+            raise RuntimeError("vendor down")
 
-    def test_snapshot_header_with_real_analysis_is_not_a_dump(self):
-        mixed = (
-            "## Verified market data snapshot for SPY\n"
-            "SPY closed at 761.78, below the 10-day EMA, suggesting near-term "
-            "weakness. RSI at 48.62 is neutral and the MACD histogram turning "
-            "negative signals fading momentum. The pullback is approaching the "
-            "lower Bollinger band near support."
-        )
-        self.assertFalse(_is_tool_output_only(mixed))
+        blocks, statuses = fetch_sources([
+            DataSource("empty_src", lambda: "   "),
+            DataSource("error_src", boom),
+            DataSource("unavail_src", lambda: "DATA_UNAVAILABLE for cpi"),
+        ])
+        self.assertEqual(statuses["empty_src"], "empty")
+        self.assertEqual(statuses["error_src"], "error")
+        self.assertEqual(statuses["unavail_src"], "unavailable")
+        # Never surface raw/unavailable text as a usable block.
+        self.assertEqual(blocks, {})
 
-    def test_analysis_with_summary_table_is_not_a_dump(self):
-        analysis = (
-            "SPY pulled back from 777.88 to close at 761.78 on 09-01, settling "
-            "below the 10-day EMA as momentum faded.\n\n"
-            "| Metric | Value |\n|---|---:|\n| Close | 761.78 |\n"
-            "| RSI | 48.62 |\n"
-        )
-        self.assertFalse(_is_tool_output_only(analysis))
+    def test_single_fetch_drives_both_no_double_call(self):
+        calls = []
+        src = DataSource("news", lambda: (calls.append(1), "data")[1])
+        fetch_sources([src])
+        self.assertEqual(len(calls), 1)
 
-    def test_empty_is_not_a_dump(self):
-        self.assertFalse(_is_tool_output_only(""))
+    def test_sentinel_is_not_passed_through(self):
+        # A vendor sentinel must never be mistaken for a real value.
+        for marker in UNAVAILABLE_MARKERS:
+            blocks, statuses = fetch_sources([DataSource("s", lambda m=marker: f"{m} something")])
+            self.assertEqual(statuses["s"], "unavailable", marker)
+            self.assertNotIn("s", blocks)
 
 
-class RescueToolOutputTests(unittest.TestCase):
-    def _tool_msg(self, name, content):
-        return ToolMessage(content=content, name=name, tool_call_id="1")
+class RenderHelpersTests(unittest.TestCase):
+    def test_tagged_blocks_wrap_each_source(self):
+        rendered = render_tagged_blocks({"news": "headline", "snap": "table"})
+        self.assertIn("<start_of_news>\nheadline\n<end_of_news>", rendered)
+        self.assertIn("<start_of_snap>\ntable\n<end_of_snap>", rendered)
 
-    def test_returns_newest_data_tool_output(self):
-        msgs = [
-            self._tool_msg("get_stock_data", "raw stock csv"),
-            self._tool_msg(
-                "get_verified_market_snapshot",
-                "## Verified market data snapshot for SPY\n...tables...",
-            ),
-        ]
+    def test_sources_received_line(self):
         self.assertEqual(
-            rescue_tool_output(msgs), "## Verified market data snapshot for SPY\n...tables..."
+            format_sources_received({"news": "ok", "macro": "empty"}),
+            "> Data sources received: news=ok, macro=empty",
         )
-
-    def test_skips_error_and_unavailable_sentinels(self):
-        msgs = [
-            self._tool_msg("get_stock_data", "raw stock csv 2"),
-            self._tool_msg("get_realtime_quote", "[realtime quote unavailable] MCP error"),
-            self._tool_msg("get_stock_data", "NO_DATA_AVAILABLE"),
-        ]
-        # The newer-but-usable data tool output wins; error/empty sentinels skipped.
-        self.assertEqual(rescue_tool_output(msgs), "raw stock csv 2")
-
-    def test_ignores_non_data_tools_and_empty_history(self):
-        self.assertEqual(rescue_tool_output([]), "")
-        msgs = [self._tool_msg("get_news", "some headlines")]
-        self.assertEqual(rescue_tool_output(msgs), "")
+        self.assertEqual(
+            format_sources_received({}),
+            "> Data sources received: none",
+        )
 
 
 if __name__ == "__main__":
